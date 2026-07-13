@@ -1,0 +1,5 @@
+﻿  FileName.cpp
+D:\飞机大战\飞机大战\FileName.cpp(86,29): warning C4244: “=”: 从“LONG”转换到“float”，可能丢失数据
+D:\飞机大战\飞机大战\FileName.cpp(87,28): warning C4244: “=”: 从“LONG”转换到“float”，可能丢失数据
+D:\飞机大战\飞机大战\FileName.cpp(297,20): warning C4244: “=”: 从“double”转换到“LONG”，可能丢失数据
+  飞机大战.vcxproj -> D:\飞机大战\x64\Debug\飞机大战.exe
