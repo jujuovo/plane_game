@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "运行飞机大战",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "preLaunchTask": "编译飞机大战",
+      "program": "${workspaceFolder}\\x64\\Debug\\飞机大战.exe",
+      "cwd": "${workspaceFolder}\\飞机大战",
+      "environment": [
+        {
+          "name": "__COMPAT_LAYER",
+          "value": "HIGHDPIAWARE"
+        }
+      ],
+      "stopAtEntry": false,
+      "console": "internalConsole"
+    }
+  ]
+}

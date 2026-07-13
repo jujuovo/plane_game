@@ -1,0 +1,21 @@
+{
+  "version": 4,
+  "configurations": [
+    {
+      "name": "Win32",
+      "compilerPath": "D:\\Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.50.35717\\bin\\Hostx64\\x64\\cl.exe",
+      "includePath": [
+        "${workspaceFolder}\\**",
+        "D:\\Visual Studio\\18\\Community\\VC\\Auxiliary\\VS\\include"
+      ],
+      "defines": [
+        "_DEBUG",
+        "_UNICODE",
+        "UNICODE"
+      ],
+      "windowsSdkVersion": "10.0.26100.0",
+      "intelliSenseMode": "windows-msvc-x64",
+      "cppStandard": "c++20"
+    }
+  ]
+}
