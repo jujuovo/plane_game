@@ -20,6 +20,9 @@ using namespace std;
 constexpr auto WIDTH = 600;
 constexpr auto HEIGHT = 1000;
 constexpr unsigned SUMHP = 3;
+constexpr unsigned ENDLESS_HP = 10;
+constexpr int GAME_CAMPAIGN = 1;
+constexpr int GAME_ENDLESS = 2;
 constexpr ULONGLONG hurttime = 1200;
 constexpr DWORD FRAME_TIME_MS = 8; // About 120 FPS for smoother animation
 constexpr int PLAYER_SPEED = 4;
@@ -29,6 +32,7 @@ constexpr float PI = 3.1415926535f;
 constexpr size_t MAX_ENEMY_BULLETS = 260;
 
 int gameMode = 1;
+int gameType = GAME_CAMPAIGN;
 unsigned long long totalScore = 0;
 ULONGLONG p1ShootClock = 0, p2ShootClock = 0;
 bool spaceLast = false, num1Last = false;
@@ -37,7 +41,7 @@ string playerName;
 
 struct SCORE_ENTRY { string name; unsigned long long score; };
 struct SAVE_DATA {
-    int version=1, mode=1, level=1, bombCount=0, bossHp=0;
+    int version=2, mode=1, playMode=GAME_CAMPAIGN, level=1, bombCount=0, bossHp=0;
     unsigned long long score=0, levelScoreStart=0, levelElapsedMs=0;
     bool bossActive=false, p1Dead=false, p2Dead=false, p1Shield=false, p2Shield=false;
     int p1Hp=3,p2Hp=3,p1FireMs=0,p2FireMs=0;
@@ -83,20 +87,22 @@ void AddScore(const string& name,unsigned long long score) {
     if(scores.size()>10)scores.resize(10);
     ofstream out(RANK_FILE,ios::trunc); for(const auto& e:scores) out<<e.name<<' '<<e.score<<'\n';
 }
-bool HasSave() { ifstream in(SAVE_FILE); string tag; return (in>>tag)&&tag=="PLANE_SAVE_V1"; }
+bool HasSave() { ifstream in(SAVE_FILE); string tag; return (in>>tag)&&(tag=="PLANE_SAVE_V1"||tag=="PLANE_SAVE_V2"); }
 bool LoadSave(SAVE_DATA& s) {
-    ifstream in(SAVE_FILE); string tag; if(!(in>>tag)||tag!="PLANE_SAVE_V1")return false;
-    in>>s.name>>s.mode>>s.score>>s.level>>s.levelScoreStart>>s.levelElapsedMs;
+    ifstream in(SAVE_FILE); string tag; if(!(in>>tag)||(tag!="PLANE_SAVE_V1"&&tag!="PLANE_SAVE_V2"))return false;
+    if(tag=="PLANE_SAVE_V2") in>>s.name>>s.mode>>s.playMode>>s.score>>s.level>>s.levelScoreStart>>s.levelElapsedMs;
+    else { in>>s.name>>s.mode>>s.score>>s.level>>s.levelScoreStart>>s.levelElapsedMs; s.playMode=GAME_CAMPAIGN; }
     in>>s.bossActive>>s.bossHp>>s.bombCount;
     in>>s.p1Hp>>s.p1Dead>>s.p1Shield>>s.p1FireMs>>s.p1Rect.left>>s.p1Rect.top>>s.p1Rect.right>>s.p1Rect.bottom;
     in>>s.p2Hp>>s.p2Dead>>s.p2Shield>>s.p2FireMs>>s.p2Rect.left>>s.p2Rect.top>>s.p2Rect.right>>s.p2Rect.bottom;
     // Reaching EOF immediately after the final value is valid. Only a failed
     // extraction means the save is damaged.
-    return !in.fail() && s.level>=1 && s.level<=3 && (s.mode==1||s.mode==2);
+    return !in.fail() && s.level>=1 && (s.playMode==GAME_ENDLESS||s.level<=3) &&
+        (s.mode==1||s.mode==2) && (s.playMode==GAME_CAMPAIGN||s.playMode==GAME_ENDLESS);
 }
 bool WriteSave(const SAVE_DATA& s) {
     ofstream out(SAVE_FILE,ios::trunc); if(!out)return false;
-    out<<"PLANE_SAVE_V1\n"<<s.name<<' '<<s.mode<<' '<<s.score<<' '<<s.level<<' '<<s.levelScoreStart<<' '<<s.levelElapsedMs<<'\n';
+    out<<"PLANE_SAVE_V2\n"<<s.name<<' '<<s.mode<<' '<<s.playMode<<' '<<s.score<<' '<<s.level<<' '<<s.levelScoreStart<<' '<<s.levelElapsedMs<<'\n';
     out<<s.bossActive<<' '<<s.bossHp<<' '<<s.bombCount<<'\n';
     out<<s.p1Hp<<' '<<s.p1Dead<<' '<<s.p1Shield<<' '<<s.p1FireMs<<' '<<s.p1Rect.left<<' '<<s.p1Rect.top<<' '<<s.p1Rect.right<<' '<<s.p1Rect.bottom<<'\n';
     out<<s.p2Hp<<' '<<s.p2Dead<<' '<<s.p2Shield<<' '<<s.p2FireMs<<' '<<s.p2Rect.left<<' '<<s.p2Rect.top<<' '<<s.p2Rect.right<<' '<<s.p2Rect.bottom<<'\n';
@@ -142,7 +148,7 @@ struct Ptcl { float x,y,vx,vy; int life,lmax; COLORREF col; };
 
 class ME {
 public:
-    ME(IMAGE& img, IMAGE& img_m) :img(img), img_mask(img_m), HP(SUMHP), hurtTime(0) {
+    ME(IMAGE& img, IMAGE& img_m, unsigned maxHp=SUMHP) :img(img), img_mask(img_m), HP(maxHp), maxHP(maxHp), hurtTime(0) {
         rect.left = WIDTH/2 - img.getwidth()/2;
         rect.right = rect.left + img.getwidth();
         rect.top = HEIGHT - img.getheight();
@@ -212,15 +218,15 @@ public:
         return (HP==0)?false:true;
     }
     int GetHP() { return HP; }
-    void Heal() { if (HP<SUMHP) HP++; }
+    void Heal() { if (HP<maxHP) HP++; }
     void GrantShield() { shield=true; }
     bool HasShield() { return shield; }
     void Restore(int savedHp,bool savedShield,const RECT& savedRect) {
-        HP=(unsigned)max(0,min((int)SUMHP,savedHp)); shield=savedShield; rect=savedRect; Clamp(); hurtTime=0;
+        HP=(unsigned)max(0,min((int)maxHP,savedHp)); shield=savedShield; rect=savedRect; Clamp(); hurtTime=0;
     }
 private:
     IMAGE &img, &img_mask;
-    RECT rect; unsigned int HP; ULONGLONG hurtTime; bool shield=false;
+    RECT rect; unsigned int HP, maxHP; ULONGLONG hurtTime; bool shield=false;
     vector<Ptcl> pts;
 };
 
@@ -556,9 +562,10 @@ public:
 
 void GameStart(int mode) {
     cleardevice(); settextcolor(BLACK); settextstyle(40,0,_T("\u9ed1\u4f53"));
-    if (mode==1) outtextxy(WIDTH/2-100,HEIGHT/2,_T("\u5355\u4eba\u6e38\u620f\u5f00\u59cb\uff01"));
-    else outtextxy(WIDTH/2-100,HEIGHT/2,_T("\u53cc\u4eba\u6e38\u620f\u5f00\u59cb\uff01"));
-    outtextxy(WIDTH/2-160,HEIGHT/2+60,_T("\u6309\u4efb\u610f\u952e\u8fd4\u56de\u4e3b\u83dc\u5355"));
+    LPCTSTR text=gameType==GAME_ENDLESS?_T("\u65e0\u9650\u6a21\u5f0f\u5f00\u59cb\uff01"):_T("\u95ef\u5173\u6a21\u5f0f\u5f00\u59cb\uff01");
+    outtextxy(WIDTH/2-textwidth(text)/2,HEIGHT/2,text);
+    settextstyle(25,0,_T("\u9ed1\u4f53"));
+    LPCTSTR tip=_T("\u6309\u4efb\u610f\u952e\u5f00\u59cb\u6218\u6597");outtextxy(WIDTH/2-textwidth(tip)/2,HEIGHT/2+60,tip);
     ExMessage m; while (true) { if (peekmessage(&m,EX_KEY|EX_MOUSE)) return; }
 }
 
@@ -583,8 +590,8 @@ int screen2() {
         EndBatchDraw();
         ExMessage m; getmessage(&m,EX_MOUSE);
         if (m.lbutton) {
-            if (MessInPoint(m.x,m.y,r1)) { GameStart(1); return 1; }
-            if (MessInPoint(m.x,m.y,r2)) { GameStart(2); return 2; }
+            if (MessInPoint(m.x,m.y,r1)) return 1;
+            if (MessInPoint(m.x,m.y,r2)) return 2;
             if (MessInPoint(m.x,m.y,rb)) return 0;
         }
     }
@@ -620,6 +627,46 @@ bool EnterNickname() {
     }
 }
 
+int SelectGameType() {
+    IMAGE bk;loadimage(&bk,_T("./images/bk2.png"),WIDTH,HEIGHT);
+    LPCTSTR campaign=_T("\u95ef\u5173\u6a21\u5f0f"),endless=_T("\u65e0\u9650\u6a21\u5f0f"),back=_T("\u8fd4\u56de");RECT rc,re,rb;
+    while(true){
+        BeginBatchDraw();putimage(0,0,&bk);setbkmode(TRANSPARENT);settextcolor(BLACK);
+        settextstyle(50,0,_T("\u9ed1\u4f53"));LPCTSTR title=_T("\u9009\u62e9\u73a9\u6cd5");outtextxy(WIDTH/2-textwidth(title)/2,100,title);
+        settextstyle(38,0,_T("\u9ed1\u4f53"));
+        rc={WIDTH/2-textwidth(campaign)/2,300,WIDTH/2+textwidth(campaign)/2,350};outtextxy(rc.left,rc.top,campaign);
+        re={WIDTH/2-textwidth(endless)/2,500,WIDTH/2+textwidth(endless)/2,550};outtextxy(re.left,re.top,endless);
+        settextstyle(21,0,_T("\u9ed1\u4f53"));settextcolor(RGB(50,90,150));
+        LPCTSTR ctip=_T("\u5171 3 \u5173\uff0c\u6bcf\u5173\u72ec\u7acb 3 \u70b9\u751f\u547d");outtextxy(WIDTH/2-textwidth(ctip)/2,360,ctip);
+        LPCTSTR etip=_T("10 \u70b9\u751f\u547d\uff0c\u5b58\u6d3b\u8d8a\u4e45\u96be\u5ea6\u8d8a\u9ad8");outtextxy(WIDTH/2-textwidth(etip)/2,560,etip);
+        settextstyle(28,0,_T("\u9ed1\u4f53"));settextcolor(BLACK);rb={WIDTH/2-textwidth(back)/2,700,WIDTH/2+textwidth(back)/2,740};outtextxy(rb.left,rb.top,back);
+        EndBatchDraw();ExMessage m;getmessage(&m,EX_MOUSE);if(m.lbutton){if(MessInPoint(m.x,m.y,rc))return GAME_CAMPAIGN;if(MessInPoint(m.x,m.y,re))return GAME_ENDLESS;if(MessInPoint(m.x,m.y,rb))return 0;}
+    }
+}
+
+void ShowInstructions() {
+    IMAGE bk;loadimage(&bk,_T("./images/bk2.png"),WIDTH,HEIGHT);
+    BeginBatchDraw();putimage(0,0,&bk);setbkmode(TRANSPARENT);settextcolor(BLACK);
+    settextstyle(45,0,_T("\u9ed1\u4f53"));LPCTSTR title=_T("\u6e38\u620f\u8bf4\u660e");outtextxy(WIDTH/2-textwidth(title)/2,45,title);
+    settextstyle(27,0,_T("\u9ed1\u4f53"));settextcolor(RGB(25,75,150));outtextxy(55,125,_T("\u6309\u952e\u64cd\u4f5c"));
+    settextstyle(21,0,_T("\u9ed1\u4f53"));settextcolor(BLACK);
+    outtextxy(75,175,_T("P1\uff1aW/A/S/D \u6216\u65b9\u5411\u952e\u79fb\u52a8\uff0c\u7a7a\u683c\u5c04\u51fb"));
+    outtextxy(75,215,_T("P2\uff1a\u65b9\u5411\u952e\u79fb\u52a8\uff0c\u5c0f\u952e\u76d8 1 \u5c04\u51fb"));
+    outtextxy(75,255,_T("B\uff1a\u4f7f\u7528\u70b8\u5f39    Esc\uff1a\u6682\u505c/\u5b58\u6863"));
+    settextstyle(27,0,_T("\u9ed1\u4f53"));settextcolor(RGB(25,75,150));outtextxy(55,325,_T("\u9053\u5177\u529f\u80fd"));
+    settextstyle(21,0,_T("\u9ed1\u4f53"));settextcolor(BLACK);
+    outtextxy(75,380,_T("\u706b\u529b\u8865\u7ed9\uff1a7 \u79d2\u5185\u540c\u65f6\u53d1\u5c04 3 \u679a\u5b50\u5f39"));
+    outtextxy(75,425,_T("\u751f\u547d\u9053\u5177\uff1a\u6062\u590d 1 \u70b9\u751f\u547d\uff0c\u4e0d\u8d85\u8fc7\u4e0a\u9650"));
+    outtextxy(75,470,_T("\u70b8\u5f39\u8865\u7ed9\uff1a\u589e\u52a0 1 \u679a\u70b8\u5f39"));
+    outtextxy(75,515,_T("\u62a4\u76fe\u8865\u7ed9\uff1a\u62b5\u6d88\u4e0b\u4e00\u6b21\u4f24\u5bb3"));
+    settextstyle(27,0,_T("\u9ed1\u4f53"));settextcolor(RGB(25,75,150));outtextxy(55,590,_T("\u73a9\u6cd5\u76ee\u6807"));
+    settextstyle(20,0,_T("\u9ed1\u4f53"));settextcolor(BLACK);
+    outtextxy(75,640,_T("\u95ef\u5173\uff1a\u51fb\u8d25\u6bcf\u5173 BOSS\uff0c\u5173\u5361\u95f4\u6062\u590d\u6ee1\u751f\u547d"));
+    outtextxy(75,680,_T("\u65e0\u9650\uff1a\u5c3d\u53ef\u80fd\u751f\u5b58\u5e76\u83b7\u53d6\u66f4\u9ad8\u5206\u6570"));
+    settextcolor(RGB(80,80,80));LPCTSTR tip=_T("\u6309 Enter / Esc \u6216\u70b9\u51fb\u8fd4\u56de");outtextxy(WIDTH/2-textwidth(tip)/2,790,tip);EndBatchDraw();
+    while(true){ExMessage m;getmessage(&m,EX_KEY|EX_MOUSE);if(m.lbutton||(m.message==WM_KEYDOWN&&(m.vkcode==VK_RETURN||m.vkcode==VK_ESCAPE)))return;}
+}
+
 void ShowRanking() {
     IMAGE bk;loadimage(&bk,_T("./images/bk2.png"),WIDTH,HEIGHT);vector<SCORE_ENTRY> scores=LoadScores();
     BeginBatchDraw();putimage(0,0,&bk);setbkmode(TRANSPARENT);settextcolor(BLACK);
@@ -635,10 +682,10 @@ void ShowRanking() {
     while(true){ExMessage m;getmessage(&m,EX_KEY|EX_MOUSE);if((m.message==WM_KEYDOWN&&(m.vkcode==VK_RETURN||m.vkcode==VK_ESCAPE))||m.lbutton)return;}
 }
 
-// 0=start with current player, 1=continue save, 2=switch player, 3=ranking, 4=exit
+// 0=start, 1=continue, 2=switch player, 3=ranking, 4=instructions, 5=exit
 int Welcome() {
     IMAGE bk;loadimage(&bk,_T("./images/bk2.png"),WIDTH,HEIGHT);
-    LPCTSTR labels[5]={_T("\u5f00\u59cb\u6e38\u620f"),_T("\u7ee7\u7eed\u5b58\u6863"),_T("\u5207\u6362\u73a9\u5bb6"),_T("\u5386\u53f2\u6392\u884c\u699c"),_T("\u9000\u51fa\u6e38\u620f")};RECT rs[5];
+    LPCTSTR labels[6]={_T("\u5f00\u59cb\u6e38\u620f"),_T("\u7ee7\u7eed\u5b58\u6863"),_T("\u5207\u6362\u73a9\u5bb6"),_T("\u5386\u53f2\u6392\u884c\u699c"),_T("\u6e38\u620f\u8bf4\u660e"),_T("\u9000\u51fa\u6e38\u620f")};RECT rs[6];
     while(true){
         SAVE_DATA coverSave;bool saveAvailable=LoadSave(coverSave);
         BeginBatchDraw();putimage(0,0,&bk);setbkmode(TRANSPARENT);settextcolor(BLACK);settextstyle(60,0,_T("\u9ed1\u4f53"));
@@ -647,17 +694,18 @@ int Welcome() {
         TCHAR current[64];_stprintf_s(current,64,_T("\u5f53\u524d\u73a9\u5bb6: %s"),currentName.c_str());
         settextstyle(22,0,_T("\u9ed1\u4f53"));settextcolor(RGB(35,105,175));outtextxy(WIDTH/2-textwidth(current)/2,145,current);
         settextstyle(34,0,_T("\u9ed1\u4f53"));
-        for(int i=0;i<5;i++){rs[i].left=WIDTH/2-textwidth(labels[i])/2-20;rs[i].right=WIDTH/2+textwidth(labels[i])/2+20;rs[i].top=205+i*100;rs[i].bottom=rs[i].top+48;
+        for(int i=0;i<6;i++){rs[i].left=WIDTH/2-textwidth(labels[i])/2-20;rs[i].right=WIDTH/2+textwidth(labels[i])/2+20;rs[i].top=195+i*105;rs[i].bottom=rs[i].top+48;
             settextcolor(i==1&&!saveAvailable?RGB(150,150,150):BLACK);outtextxy(WIDTH/2-textwidth(labels[i])/2,rs[i].top,labels[i]);}
         settextstyle(18,0,_T("\u9ed1\u4f53"));
         if(saveAvailable){
             wstring savedName(coverSave.name.begin(),coverSave.name.end());TCHAR detail[128];
-            _stprintf_s(detail,128,_T("\u5b58\u6863: %s   LEVEL %d   Score %llu"),savedName.c_str(),coverSave.level,coverSave.score);
+            LPCTSTR typeName=coverSave.playMode==GAME_ENDLESS?_T("\u65e0\u9650"):_T("\u95ef\u5173");
+            _stprintf_s(detail,128,_T("\u5b58\u6863: %s  %s  \u96be\u5ea6/\u5173\u5361 %d  Score %llu"),savedName.c_str(),typeName,coverSave.level,coverSave.score);
             settextcolor(RGB(35,105,175));outtextxy(WIDTH/2-textwidth(detail)/2,rs[1].bottom+2,detail);
         }else{
             LPCTSTR none=_T("\u6682\u65e0\u5b58\u6863\uff08\u6e38\u620f\u4e2d\u6309 Esc \u4fdd\u5b58\uff09");settextcolor(RGB(130,130,130));outtextxy(WIDTH/2-textwidth(none)/2,rs[1].bottom+2,none);
         }
-        EndBatchDraw();ExMessage m;getmessage(&m,EX_MOUSE);if(m.lbutton)for(int i=0;i<5;i++)if(MessInPoint(m.x,m.y,rs[i])){if(i==1&&!saveAvailable)break;return i;}
+        EndBatchDraw();ExMessage m;getmessage(&m,EX_MOUSE);if(m.lbutton)for(int i=0;i<6;i++)if(MessInPoint(m.x,m.y,rs[i])){if(i==1&&!saveAvailable)break;return i;}
     }
 }
 
@@ -667,7 +715,7 @@ void Over() {
     TCHAR s[128];
     _stprintf_s(s,128,_T("\u603b\u5f97\u5206:%llu"),totalScore);
     setbkmode(TRANSPARENT); settextcolor(gameWon?GREEN:RED); settextstyle(44,0,_T("\u9ed1\u4f53"));
-    LPCTSTR result=gameWon?_T("\u4e09\u5173\u901a\u5173\uff01"):_T("\u6e38\u620f\u7ed3\u675f");
+    LPCTSTR result=gameWon?_T("\u4e09\u5173\u901a\u5173\uff01"):(gameType==GAME_ENDLESS?_T("\u65e0\u9650\u6a21\u5f0f\u7ed3\u675f"):_T("\u6e38\u620f\u7ed3\u675f"));
     outtextxy(WIDTH/2-textwidth(result)/2,HEIGHT/10,result);
     settextstyle(36,0,_T("\u9ed1\u4f53"));
     outtextxy(WIDTH/2-textwidth(s)/2,HEIGHT/10+60,s);
@@ -758,7 +806,7 @@ void TryDropPowerup(vector<POWERUP*>& items, RECT where,
 
 bool Play(bool resumeGame=false) {
     SAVE_DATA saved; bool resuming=resumeGame&&LoadSave(saved);
-    if(resuming){gameMode=saved.mode;playerName=saved.name;}
+    if(resuming){gameMode=saved.mode;gameType=saved.playMode;playerName=saved.name;}
     HWND gameWindow = GetHWnd();
     LONG_PTR exStyle = GetWindowLongPtr(gameWindow, GWL_EXSTYLE);
     exStyle &= ~(WS_EX_NOACTIVATE | WS_EX_TRANSPARENT);
@@ -864,8 +912,9 @@ bool Play(bool resumeGame=false) {
     }
 
     BK bk(bk_image);
-    ME me(me_image, me_image_mask);
-    ME me2(p2_image, p2_image_mask);
+    unsigned startHp=gameType==GAME_ENDLESS?ENDLESS_HP:SUMHP;
+    ME me(me_image, me_image_mask,startHp);
+    ME me2(p2_image, p2_image_mask,startHp);
     me2.GetRect().left = WIDTH/4 - me_image.getwidth()/2;
     me2.GetRect().right = me2.GetRect().left + me_image.getwidth();
     me2.GetRect().bottom = HEIGHT;
@@ -972,10 +1021,10 @@ bool Play(bool resumeGame=false) {
         }
         bombLast=bombNow;
 
-        // ---- End-of-level Boss trigger ----
+        // ---- End-of-level Boss trigger (campaign only) ----
         ULONGLONG levelPlayedMs = levelElapsedBase+frameStart-levelStart;
         unsigned long long levelTargetScore = 260ULL + currentLevel*120ULL;
-        if (!bossActive && (levelPlayedMs>=45000 || totalScore-levelScoreStart>=levelTargetScore)) {
+        if (gameType==GAME_CAMPAIGN && !bossActive && (levelPlayedMs>=45000 || totalScore-levelScoreStart>=levelTargetScore)) {
             for (auto e:es) delete e; es.clear();
             for (auto b:ebs) delete b; ebs.clear();
             es.push_back(new ENEMY_TYPE3(enemy3_image,enemy3_image_mask,e3boom,e3boom_mask,currentLevel,gameMode));
@@ -1025,8 +1074,9 @@ bool Play(bool resumeGame=false) {
             outtextxy(WIDTH-textwidth(inf)-15,15,inf);
         }
 
-        TCHAR levelText[32];
-        _stprintf_s(levelText,32,_T("LEVEL %d / 3"),currentLevel);
+        TCHAR levelText[48];
+        if(gameType==GAME_ENDLESS)_stprintf_s(levelText,48,_T("\u65e0\u9650\u6a21\u5f0f  \u96be\u5ea6 %d"),currentLevel);
+        else _stprintf_s(levelText,48,_T("LEVEL %d / 3"),currentLevel);
         settextcolor(RGB(30,80,180)); settextstyle(22,0,_T("\u9ed1\u4f53"));
         outtextxy(WIDTH/2-textwidth(levelText)/2,12,levelText);
 
@@ -1144,7 +1194,7 @@ bool Play(bool resumeGame=false) {
         // ---- Advance after defeating the current level Boss ----
         bool bossStillPresent=false;
         for (auto e:es) if (e->IsBoss()) { bossStillPresent=true; break; }
-        if (bossActive && !bossStillPresent) {
+        if (gameType==GAME_CAMPAIGN && bossActive && !bossStillPresent) {
             if (currentLevel>=3) {
                 gameWon=true;
                 recordResult=true;
@@ -1152,6 +1202,16 @@ bool Play(bool resumeGame=false) {
             } else {
                 currentLevel++;
                 bossActive=false;
+                for(auto b:ebs)delete b;ebs.clear();
+                for(auto b:p1bs)delete b;p1bs.clear();
+                for(auto b:p2bs)delete b;p2bs.clear();
+                for(auto p:powerups)delete p;powerups.clear();
+                me.Restore(SUMHP,false,me.GetRect());p1Dead=false;
+                if(gameMode==2){me2.Restore(SUMHP,false,me2.GetRect());p2Dead=false;}
+                FlushBatchDraw();
+                TCHAR clearText[96];_stprintf_s(clearText,96,_T("\u7b2c %d \u5173\u901a\u8fc7\uff01\n\u751f\u547d\u5df2\u6062\u590d\uff0c\u70b9\u51fb\u786e\u5b9a\u8fdb\u5165\u7b2c %d \u5173\u3002"),currentLevel-1,currentLevel);
+                MessageBox(GetHWnd(),clearText,_T("\u5173\u5361\u7ed3\u7b97"),MB_OK|MB_ICONINFORMATION);
+                frameStart=GetTickCount();
                 levelStart=frameStart;
                 levelElapsedBase=0;
                 levelScoreStart=totalScore;
@@ -1162,13 +1222,16 @@ bool Play(bool resumeGame=false) {
 
         // ---- Timed spawn and gradual difficulty increase ----
         levelPlayedMs = levelElapsedBase+frameStart-levelStart;
-        size_t maxEnemies = 3 + currentLevel + (size_t)(levelPlayedMs/12000);
-        if (maxEnemies > 10) maxEnemies = 10;
-        ULONGLONG difficultyReduction = levelPlayedMs/90 + (currentLevel-1)*180;
-        ULONGLONG spawnInterval = difficultyReduction>=750 ? 300 : 1050-difficultyReduction;
+        if(gameType==GAME_ENDLESS) currentLevel=1+(int)(levelPlayedMs/45000);
+        int enemyLevel=gameType==GAME_ENDLESS?min(6,currentLevel):currentLevel;
+        size_t maxEnemies = 3 + enemyLevel + (size_t)(levelPlayedMs/12000);
+        size_t enemyLimit=gameType==GAME_ENDLESS?25:10;if(maxEnemies>enemyLimit)maxEnemies=enemyLimit;
+        ULONGLONG difficultyReduction = levelPlayedMs/(gameType==GAME_ENDLESS?300:90) + (enemyLevel-1)*180;
+        ULONGLONG minimumInterval=gameType==GAME_ENDLESS?150:300;
+        ULONGLONG spawnInterval = difficultyReduction>=1050-minimumInterval ? minimumInterval : 1050-difficultyReduction;
         if (!bossActive && is_play && es.size()<maxEnemies && frameStart-lastSpawn>=spawnInterval) {
             SpawnEnemy(es, enemy_image,enemy_image_mask, e1boom,e1boom_mask,
-                enemy2_image,enemy2_image_mask, e2boom,e2boom_mask,currentLevel,gameMode);
+                enemy2_image,enemy2_image_mask, e2boom,e2boom_mask,enemyLevel,gameMode);
             lastSpawn = frameStart;
         }
 
@@ -1182,7 +1245,7 @@ bool Play(bool resumeGame=false) {
             if (cmd==1) is_play=false;
             else if (cmd==2) exit(0);
             else if(cmd==3){
-                SAVE_DATA s;s.name=playerName;s.mode=gameMode;s.score=totalScore;s.level=currentLevel;
+                SAVE_DATA s;s.name=playerName;s.mode=gameMode;s.playMode=gameType;s.score=totalScore;s.level=currentLevel;
                 s.levelScoreStart=levelScoreStart;s.levelElapsedMs=levelElapsedBase+frameStart-levelStart;s.bossActive=bossActive;s.bombCount=bombCount;
                 s.p1Hp=me.GetHP();s.p1Dead=p1Dead;s.p1Shield=me.HasShield();s.p1Rect=me.GetRect();
                 s.p2Hp=me2.GetHP();s.p2Dead=p2Dead;s.p2Shield=me2.HasShield();s.p2Rect=me2.GetRect();
@@ -1246,13 +1309,17 @@ int main() {
     bool hasPlayer=LoadLastPlayer(playerName);
     while (true) {
         int action=Welcome();
-        if(action==4)break;
+        if(action==5)break;
+        if(action==4){ShowInstructions();continue;}
         if(action==3){ShowRanking();continue;}
         if(action==2){if(EnterNickname()){hasPlayer=true;SaveLastPlayer(playerName);}continue;}
         if(action==1){SAVE_DATA check;if(LoadSave(check)){playerName=check.name;hasPlayer=true;SaveLastPlayer(playerName);Play(true);}continue;}
         if(!hasPlayer){if(!EnterNickname())continue;hasPlayer=true;SaveLastPlayer(playerName);}
         gameMode = screen2();
         if (gameMode == 0) continue;
+        gameType = SelectGameType();
+        if(gameType==0)continue;
+        GameStart(gameMode);
         Play(false);
     }
     closegraph();timeEndPeriod(1);
