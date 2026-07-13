@@ -175,14 +175,14 @@ public:
             circle(cx,cy,radius); setlinestyle(PS_SOLID,1);
         }
     }
-    void Control() {
-        if ((GetAsyncKeyState('W') | GetAsyncKeyState(VK_UP)) & 0x8000)
+    void Control(bool allowArrows=true) {
+        if ((GetAsyncKeyState('W')&0x8000) || (allowArrows && (GetAsyncKeyState(VK_UP)&0x8000)))
             { rect.top-=PLAYER_SPEED; rect.bottom-=PLAYER_SPEED; }
-        if ((GetAsyncKeyState('S') | GetAsyncKeyState(VK_DOWN)) & 0x8000)
+        if ((GetAsyncKeyState('S')&0x8000) || (allowArrows && (GetAsyncKeyState(VK_DOWN)&0x8000)))
             { rect.top+=PLAYER_SPEED; rect.bottom+=PLAYER_SPEED; }
-        if ((GetAsyncKeyState('A') | GetAsyncKeyState(VK_LEFT)) & 0x8000)
+        if ((GetAsyncKeyState('A')&0x8000) || (allowArrows && (GetAsyncKeyState(VK_LEFT)&0x8000)))
             { rect.left-=PLAYER_SPEED; rect.right-=PLAYER_SPEED; }
-        if ((GetAsyncKeyState('D') | GetAsyncKeyState(VK_RIGHT)) & 0x8000)
+        if ((GetAsyncKeyState('D')&0x8000) || (allowArrows && (GetAsyncKeyState(VK_RIGHT)&0x8000)))
             { rect.left+=PLAYER_SPEED; rect.right+=PLAYER_SPEED; }
         Clamp();
     }
@@ -650,9 +650,10 @@ void ShowInstructions() {
     settextstyle(45,0,_T("\u9ed1\u4f53"));LPCTSTR title=_T("\u6e38\u620f\u8bf4\u660e");outtextxy(WIDTH/2-textwidth(title)/2,45,title);
     settextstyle(27,0,_T("\u9ed1\u4f53"));settextcolor(RGB(25,75,150));outtextxy(55,125,_T("\u6309\u952e\u64cd\u4f5c"));
     settextstyle(21,0,_T("\u9ed1\u4f53"));settextcolor(BLACK);
-    outtextxy(75,175,_T("P1\uff1aW/A/S/D \u6216\u65b9\u5411\u952e\u79fb\u52a8\uff0c\u7a7a\u683c\u5c04\u51fb"));
-    outtextxy(75,215,_T("P2\uff1a\u65b9\u5411\u952e\u79fb\u52a8\uff0c\u5c0f\u952e\u76d8 1 \u5c04\u51fb"));
-    outtextxy(75,255,_T("B\uff1a\u4f7f\u7528\u70b8\u5f39    Esc\uff1a\u6682\u505c/\u5b58\u6863"));
+    outtextxy(75,175,_T("\u5355\u4eba\uff1aW/A/S/D \u6216\u65b9\u5411\u952e\u79fb\u52a8\uff0c\u7a7a\u683c\u5c04\u51fb"));
+    outtextxy(75,215,_T("\u53cc\u4eba P1\uff1aW/A/S/D \u79fb\u52a8\uff0c\u7a7a\u683c\u5c04\u51fb"));
+    outtextxy(75,255,_T("\u53cc\u4eba P2\uff1a\u65b9\u5411\u952e\u79fb\u52a8\uff0c\u5c0f\u952e\u76d8 1 \u5c04\u51fb"));
+    outtextxy(75,295,_T("B\uff1a\u4f7f\u7528\u70b8\u5f39    Esc\uff1a\u6682\u505c/\u5b58\u6863"));
     settextstyle(27,0,_T("\u9ed1\u4f53"));settextcolor(RGB(25,75,150));outtextxy(55,325,_T("\u9053\u5177\u529f\u80fd"));
     settextstyle(21,0,_T("\u9ed1\u4f53"));settextcolor(BLACK);
     outtextxy(75,380,_T("\u706b\u529b\u8865\u7ed9\uff1a7 \u79d2\u5185\u540c\u65f6\u53d1\u5c04 3 \u679a\u5b50\u5f39"));
@@ -1055,7 +1056,7 @@ bool Play(bool resumeGame=false) {
         // ---- Render ----
         BeginBatchDraw(); cleardevice(); bk.Show();
 
-        if (!p1Dead) { me.Control(); me.Show(); }
+        if (!p1Dead) { me.Control(gameMode==1); me.Show(); }
         if (gameMode==2 && !p2Dead) { me2.Control2(); me2.Show(); }
 
         // ---- UI ----
