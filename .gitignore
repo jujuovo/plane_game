@@ -1,4 +1,5 @@
 .vs/
+.DS_Store
 
 # Visual Studio user-local settings
 *.user
