@@ -1,2 +1,2 @@
-PlatformToolSet=v145:VCToolArchitecture=Native64Bit:VCToolsVersion=14.50.35717:VCServicingVersionCompilers=14.50.35723:TargetPlatformVersion=10.0.26100.0:VcpkgTriplet=x64-windows:
-Debug|x64|D:\wolf\learning\小学期程序设计小组作业\6\plane_game-main\|
+PlatformToolSet=v145:VCToolArchitecture=Native32Bit:VCToolsVersion=14.50.35717:VCServicingVersionCompilers=14.50.35729:TargetPlatformVersion=10.0.26100.0:
+Debug|x64|E:\xmu\大一小学期\plane_game\|

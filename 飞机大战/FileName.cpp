@@ -47,6 +47,7 @@ constexpr float BACKGROUND_SCROLL_SPEED = 95.0f;
 
 int gameMode = 1;
 int runMode = 1; // 1: three-stage mode, 2: endless mode
+int gameDifficulty = 2; // 1: easy, 2: hard (the original stage difficulty)
 unsigned long long totalScore = 0;
 ULONGLONG p1ShootClock = 0, p2ShootClock = 0;
 bool spaceLast = false, num1Last = false;
@@ -58,6 +59,7 @@ float gPlayerMoveScale = 1.0f;
 enum MUSIC_TRACK { MUSIC_NONE=-1,MUSIC_MENU,MUSIC_STAGE12,MUSIC_BOSS12,MUSIC_STAGE3,MUSIC_ENDLESS,MUSIC_PAUSE,MUSIC_OVER,MUSIC_INTRO };
 int gCurrentMusic=MUSIC_NONE;
 bool gShootSoundReady=false,gExplosionSoundReady=false,gPlayerDeathReady=false;
+bool gPauseMusicReady=false;
 vector<BYTE> gShootWaveData;
 
 void ReducePcm16WaveVolume(vector<BYTE>& wave,float gain){
@@ -84,7 +86,9 @@ LPCTSTR MusicPath(MUSIC_TRACK track){
     if(track==MUSIC_PAUSE)return _T("./music/pause_music.mp3");
     if(track==MUSIC_STAGE12)return _T("./music/stage12_loop.mp3");
     if(track==MUSIC_BOSS12)return _T("./music/boss12_loop.mp3");
-    if(track==MUSIC_STAGE3)return _T("./music/stage3_loop.mp3");
+    // stage3_loop.mp3 and endless_loop.mp3 were byte-for-byte identical.
+    // Share the remaining file instead of shipping the same track twice.
+    if(track==MUSIC_STAGE3)return _T("./music/endless_loop.mp3");
     if(track==MUSIC_ENDLESS)return _T("./music/endless_loop.mp3");
     if(track==MUSIC_OVER)return _T("./music/gameover_loop.mp3");  // 占位文件（如不存在会自动静音）
     if(track==MUSIC_INTRO)return _T("./music/intro.mp3");
@@ -111,6 +115,22 @@ void PlayMusic(MUSIC_TRACK track){
     mciSendString(_T("setaudio game_bgm volume to 420"),NULL,0,NULL);
     if(mciSendString(_T("play game_bgm repeat"),NULL,0,NULL)==0)gCurrentMusic=track;
     else mciSendString(_T("close game_bgm"),NULL,0,NULL);
+}
+
+void BeginPauseAudio(){
+    // Keep the gameplay stream open. Opening/closing an MP3 on every pause is
+    // synchronous in MCI and was the main source of menu click stalls.
+    if(gCurrentMusic!=MUSIC_NONE)mciSendString(_T("pause game_bgm"),NULL,0,NULL);
+    if(gPauseMusicReady){
+        mciSendString(_T("stop pause_bgm"),NULL,0,NULL);
+        mciSendString(_T("play pause_bgm from 0 repeat"),NULL,0,NULL);
+    }
+}
+
+void EndPauseAudio(bool resumeGameplay){
+    if(gPauseMusicReady)mciSendString(_T("stop pause_bgm"),NULL,0,NULL);
+    if(resumeGameplay&&gCurrentMusic!=MUSIC_NONE)
+        mciSendString(_T("resume game_bgm"),NULL,0,NULL);
 }
 
 void PlayMciSound(LPCTSTR alias){
@@ -143,12 +163,14 @@ void InitGameAudio(){
     mciSendString(_T("close game_meow1"),NULL,0,NULL);
     mciSendString(_T("close game_meow2"),NULL,0,NULL);
     mciSendString(_T("close game_player_death"),NULL,0,NULL);
+    mciSendString(_T("close pause_bgm"),NULL,0,NULL);
     TCHAR explosionPath[MAX_PATH],command[MAX_PATH+96];
-    TCHAR meow1Path[MAX_PATH], meow2Path[MAX_PATH],playerDeathPath[MAX_PATH];
+    TCHAR meow1Path[MAX_PATH], meow2Path[MAX_PATH],playerDeathPath[MAX_PATH],pausePath[MAX_PATH];
     GetFullPathName(_T("./music/explosion_enermy.mp3"),MAX_PATH,explosionPath,NULL);
     GetFullPathName(_T("./music/meow.mp3"),MAX_PATH,meow1Path,NULL);
     GetFullPathName(_T("./music/meow2.mp3"),MAX_PATH,meow2Path,NULL);
     GetFullPathName(_T("./music/player_death.mp3"),MAX_PATH,playerDeathPath,NULL);
+    GetFullPathName(_T("./music/pause_music.mp3"),MAX_PATH,pausePath,NULL);
     // The firing sound is used very frequently. Keeping the WAV in memory and
     // asking PlaySound to play it asynchronously avoids blocking the render
     // loop with two synchronous MCI commands for every shot.
@@ -176,6 +198,11 @@ void InitGameAudio(){
     _stprintf_s(command,MAX_PATH+96,_T("open \"%s\" type mpegvideo alias game_player_death"),playerDeathPath);
     gPlayerDeathReady=mciSendString(command,NULL,0,NULL)==0;
     if(gPlayerDeathReady)mciSendString(_T("setaudio game_player_death volume to 900"),NULL,0,NULL);
+    // Pause music is opened once at startup so entering or leaving the pause
+    // menu never performs slow disk/codec setup on the input thread.
+    _stprintf_s(command,MAX_PATH+96,_T("open \"%s\" type mpegvideo alias pause_bgm"),pausePath);
+    gPauseMusicReady=mciSendString(command,NULL,0,NULL)==0;
+    if(gPauseMusicReady)mciSendString(_T("setaudio pause_bgm volume to 420"),NULL,0,NULL);
 }
 
 void CloseGameAudio(){
@@ -185,8 +212,9 @@ void CloseGameAudio(){
     mciSendString(_T("close game_meow1"),NULL,0,NULL);
     mciSendString(_T("close game_meow2"),NULL,0,NULL);
     mciSendString(_T("close game_player_death"),NULL,0,NULL);
+    mciSendString(_T("close pause_bgm"),NULL,0,NULL);
     gShootWaveData.clear();
-    gShootSoundReady=false;gExplosionSoundReady=false;gPlayerDeathReady=false;
+    gShootSoundReady=false;gExplosionSoundReady=false;gPlayerDeathReady=false;gPauseMusicReady=false;
 }
 
 void PlayMeowRandom() {
@@ -241,7 +269,7 @@ struct UPGRADE_STATE {
     int moveSpeed=0, shieldCapacity=1, bombDamage=0, lowHpDouble=0;
 };
 struct SAVE_DATA {
-    int version=2, mode=1, runMode=1, level=1, bombCount=0, bossHp=0;
+    int version=3, mode=1, runMode=1, difficulty=2, level=1, bombCount=0, bossHp=0;
     unsigned long long score=0, levelScoreStart=0, levelElapsedMs=0;
     bool bossActive=false, p1Dead=false, p2Dead=false, p1Shield=false, p2Shield=false;
     int p1Hp=3,p2Hp=3,p1FireMs=0,p2FireMs=0,p1DroneMs=0,p2DroneMs=0;
@@ -293,12 +321,14 @@ void AddScore(const string& name,unsigned long long score,int selectedRunMode) {
     if(scores.size()>10)scores.resize(10);
     ofstream out(RankFile(selectedRunMode),ios::trunc); for(const auto& e:scores) out<<e.name<<' '<<e.score<<'\n';
 }
-bool HasSave() { ifstream in(SAVE_FILE); string tag; return (in>>tag)&&(tag=="PLANE_SAVE_V1"||tag=="PLANE_SAVE_V2"); }
+bool HasSave() { ifstream in(SAVE_FILE); string tag; return (in>>tag)&&(tag=="PLANE_SAVE_V1"||tag=="PLANE_SAVE_V2"||tag=="PLANE_SAVE_V3"); }
 bool LoadSave(SAVE_DATA& s) {
-    ifstream in(SAVE_FILE); string tag; if(!(in>>tag)||(tag!="PLANE_SAVE_V1"&&tag!="PLANE_SAVE_V2"))return false;
-    bool v2=tag=="PLANE_SAVE_V2";
-    s.version=v2?2:1;
-    if(v2) in>>s.name>>s.mode>>s.runMode>>s.score>>s.level>>s.levelScoreStart>>s.levelElapsedMs;
+    ifstream in(SAVE_FILE); string tag;
+    if(!(in>>tag)||(tag!="PLANE_SAVE_V1"&&tag!="PLANE_SAVE_V2"&&tag!="PLANE_SAVE_V3"))return false;
+    bool v3=tag=="PLANE_SAVE_V3",v2=tag=="PLANE_SAVE_V2";
+    s.version=v3?3:(v2?2:1);
+    if(v3) in>>s.name>>s.mode>>s.runMode>>s.difficulty>>s.score>>s.level>>s.levelScoreStart>>s.levelElapsedMs;
+    else if(v2) in>>s.name>>s.mode>>s.runMode>>s.score>>s.level>>s.levelScoreStart>>s.levelElapsedMs;
     else in>>s.name>>s.mode>>s.score>>s.level>>s.levelScoreStart>>s.levelElapsedMs;
     in>>s.bossActive>>s.bossHp>>s.bombCount;
     in>>s.p1Hp>>s.p1Dead>>s.p1Shield>>s.p1FireMs>>s.p1Rect.left>>s.p1Rect.top>>s.p1Rect.right>>s.p1Rect.bottom;
@@ -309,17 +339,19 @@ bool LoadSave(SAVE_DATA& s) {
     if (!(in>>s.p1DroneMs>>s.p2DroneMs)) {
         in.clear();s.p1DroneMs=0;s.p2DroneMs=0;
     }
-    if(v2) {
+    if(v2||v3) {
         in>>s.p1ShieldCount>>s.p2ShieldCount>>s.p1Kills>>s.p2Kills>>s.combo>>s.graze;
         in>>s.upgrade.bulletDamage>>s.upgrade.fireRateLevel>>s.upgrade.pierce>>s.upgrade.sideBullet
           >>s.upgrade.moveSpeed>>s.upgrade.shieldCapacity>>s.upgrade.bombDamage>>s.upgrade.lowHpDouble;
         if(in.fail()) return false;
     }
-    return s.level>=1 && (s.runMode==2||s.level<=3) && (s.mode==1||s.mode==2) && (s.runMode==1||s.runMode==2);
+    return s.level>=1 && (s.runMode==2||s.level<=3) && (s.mode==1||s.mode==2)
+        && (s.runMode==1||s.runMode==2) && (s.difficulty==1||s.difficulty==2);
 }
 bool WriteSave(const SAVE_DATA& s) {
     ofstream out(SAVE_FILE,ios::trunc); if(!out)return false;
-    out<<"PLANE_SAVE_V2\n"<<s.name<<' '<<s.mode<<' '<<s.runMode<<' '<<s.score<<' '<<s.level<<' '<<s.levelScoreStart<<' '<<s.levelElapsedMs<<'\n';
+    out<<"PLANE_SAVE_V3\n"<<s.name<<' '<<s.mode<<' '<<s.runMode<<' '<<s.difficulty<<' '
+       <<s.score<<' '<<s.level<<' '<<s.levelScoreStart<<' '<<s.levelElapsedMs<<'\n';
     out<<s.bossActive<<' '<<s.bossHp<<' '<<s.bombCount<<'\n';
     out<<s.p1Hp<<' '<<s.p1Dead<<' '<<s.p1Shield<<' '<<s.p1FireMs<<' '<<s.p1Rect.left<<' '<<s.p1Rect.top<<' '<<s.p1Rect.right<<' '<<s.p1Rect.bottom<<'\n';
     out<<s.p2Hp<<' '<<s.p2Dead<<' '<<s.p2Shield<<' '<<s.p2FireMs<<' '<<s.p2Rect.left<<' '<<s.p2Rect.top<<' '<<s.p2Rect.right<<' '<<s.p2Rect.bottom<<'\n';
@@ -527,7 +559,8 @@ private:
 // frames 表示普通帧数量，attackFrame >= 0 时表示额外提供一个攻击单帧
 class AnimatedSprite {
 public:
-    AnimatedSprite(LPCTSTR sheetFile, int frameW, int frameH, int frames, int fps, LPCTSTR attackFile = nullptr) {
+    AnimatedSprite(LPCTSTR sheetFile, int frameW, int frameH, int frames, int fps,
+        LPCTSTR attackFile = nullptr, bool scaleWholeSheet = false) {
         frameWidth = frameW; frameHeight = frameH; totalFrames = frames;
         this->fps = fps; currentFrame = 0; lastUpdate = 0;
         attackActive = false; attackUntil = 0;
@@ -535,7 +568,10 @@ public:
         maskFrames = new IMAGE[totalFrames];
         tintedSrcFrames = new IMAGE[totalFrames];
         tintedMaskFrames = new IMAGE[totalFrames];
-        LoadSpriteSheetFrames(srcFrames, totalFrames, sheetFile, frameWidth, frameHeight);
+        if (scaleWholeSheet)
+            LoadHorizontalSpriteSheetFramesScaled(srcFrames,totalFrames,sheetFile,frameWidth,frameHeight);
+        else
+            LoadSpriteSheetFrames(srcFrames, totalFrames, sheetFile, frameWidth, frameHeight);
         // 生成掩码
         for (int i = 0; i < totalFrames; i++) {
             maskFrames[i].Resize(frameWidth, frameHeight);
@@ -900,11 +936,11 @@ public:
             settextcolor(RGB(180,250,255));settextstyle(16,0,_T("Consolas"));outtextxy(cx+radius-8,cy-radius,n);
         }
     }
-    void Control(bool allowArrowKeys=true){
-        bool up=(GetAsyncKeyState('W')&0x8000)||(allowArrowKeys&&(GetAsyncKeyState(VK_UP)&0x8000));
-        bool down=(GetAsyncKeyState('S')&0x8000)||(allowArrowKeys&&(GetAsyncKeyState(VK_DOWN)&0x8000));
-        bool left=(GetAsyncKeyState('A')&0x8000)||(allowArrowKeys&&(GetAsyncKeyState(VK_LEFT)&0x8000));
-        bool right=(GetAsyncKeyState('D')&0x8000)||(allowArrowKeys&&(GetAsyncKeyState(VK_RIGHT)&0x8000));
+    void Control(){
+        bool up=(GetAsyncKeyState('W')&0x8000)!=0;
+        bool down=(GetAsyncKeyState('S')&0x8000)!=0;
+        bool left=(GetAsyncKeyState('A')&0x8000)!=0;
+        bool right=(GetAsyncKeyState('D')&0x8000)!=0;
         float distance=PLAYER_SPEED*(1.0f+moveBonus*PLAYER_SPEED_BONUS_PER_LEVEL)*gPlayerMoveScale;
         ApplyKeyboardMovement((right?1:0)-(left?1:0),(down?1:0)-(up?1:0),distance);
         if(left&&!right)tilt+=0.04f;if(right&&!left)tilt-=0.04f;
@@ -930,10 +966,6 @@ public:
             else if(tilt < 0) tilt = min(0.0f, tilt + 0.025f);
         }
         Clamp();
-    }
-    void MoveCenterTo(int x,int y){
-        int w=rect.right-rect.left,h=rect.bottom-rect.top;
-        rect.left=x-w/2;rect.right=rect.left+w;rect.top=y-h/2;rect.bottom=rect.top+h;moveCarryX=moveCarryY=0.0f;Clamp();
     }
     void Clamp(){
         int w=rect.right-rect.left,h=rect.bottom-rect.top;
@@ -971,6 +1003,7 @@ public:
         int cx=(savedRect.left+savedRect.right)/2,cy=(savedRect.top+savedRect.bottom)/2;
         rect={cx-w/2,cy-h/2,cx-w/2+w,cy-h/2+h};Clamp();hurtTime=0;
     }
+    void OnPause(ULONGLONG duration){if(hurtTime)hurtTime+=duration;}
 private:
     void ApplyKeyboardMovement(int dx,int dy,float distance){
         if(dx!=0){float amount=dx*distance+moveCarryX;int pixels=(int)amount;moveCarryX=amount-pixels;rect.left+=pixels;rect.right+=pixels;}
@@ -1100,11 +1133,11 @@ public:
         }
     }
 
-    void Control(bool allowArrowKeys = true) {
-        bool up=(GetAsyncKeyState('W')&0x8000)||(allowArrowKeys&&(GetAsyncKeyState(VK_UP)&0x8000));
-        bool down=(GetAsyncKeyState('S')&0x8000)||(allowArrowKeys&&(GetAsyncKeyState(VK_DOWN)&0x8000));
-        bool left=(GetAsyncKeyState('A')&0x8000)||(allowArrowKeys&&(GetAsyncKeyState(VK_LEFT)&0x8000));
-        bool right=(GetAsyncKeyState('D')&0x8000)||(allowArrowKeys&&(GetAsyncKeyState(VK_RIGHT)&0x8000));
+    void Control() {
+        bool up=(GetAsyncKeyState('W')&0x8000)!=0;
+        bool down=(GetAsyncKeyState('S')&0x8000)!=0;
+        bool left=(GetAsyncKeyState('A')&0x8000)!=0;
+        bool right=(GetAsyncKeyState('D')&0x8000)!=0;
         float distance=PLAYER_SPEED*(1.0f+moveBonus*PLAYER_SPEED_BONUS_PER_LEVEL)*gPlayerMoveScale;
         ApplyKeyboardMovement((right?1:0)-(left?1:0),(down?1:0)-(up?1:0),distance);
         if(left&&!right)tilt+=0.04f;if(right&&!left)tilt-=0.04f;
@@ -1129,12 +1162,6 @@ public:
             if (tilt > 0) tilt = max(0.0f, tilt - 0.025f);
             else if (tilt < 0) tilt = min(0.0f, tilt + 0.025f);
         }
-        Clamp();
-    }
-
-    void MoveCenterTo(int x, int y) {
-        int w = rect.right - rect.left, h = rect.bottom - rect.top;
-        rect.left = x - w / 2; rect.right = rect.left + w; rect.top = y - h / 2; rect.bottom = rect.top + h;
         Clamp();
     }
 
@@ -1188,6 +1215,10 @@ public:
         rect={cx-frameWidth/2,cy-frameHeight/2,cx-frameWidth/2+frameWidth,cy-frameHeight/2+frameHeight};
         moveCarryX=moveCarryY=0.0f;Clamp();
         hurtTime = 0;
+    }
+    void OnPause(ULONGLONG duration){
+        if(hurtTime)hurtTime+=duration;
+        if(lastUpdate)lastUpdate+=duration;
     }
 
 private:
@@ -1377,6 +1408,11 @@ public:
     virtual Kind GetKind() const { return KIND_TYPE1; }
     virtual int GetPhase() const { return 1; }
     virtual bool IsTransitioning() const { return false; }
+    virtual int GetBerserkCountdown() const { return 0; }
+    virtual void OnPause(ULONGLONG duration){
+        if(hitFlashUntil)hitFlashUntil+=duration;
+        if(explosionFrameAt)explosionFrameAt+=duration;
+    }
     virtual void SetTarget(float x,float y) { targetX=x; targetY=y; }
     void TakeDamage(int damage=1) {
         if(is_died)return;hp-=max(1,damage);hitFlashUntil=GetTickCount()+95;PlayGameSound(SOUND_HIT);
@@ -1468,10 +1504,8 @@ public:
             // 攻击瞬间播放 enemy2_attack.png（攻击闪一帧），下一帧立即恢复
             gEnemy2Sprite->TriggerAttackFlash(100);
             EBULLET* eb=new EBULLET();
-            // enemy2 自己向下 speed 像素/帧；子弹若用默认 3 px/帧 在 L1 会跟 enemy 完全同速。
-            // 用更快的速度 + 初始位置往前偏移 6 像素，让子弹明显脱离 enemy。
-            // L1 enemy=3 / L2=4 / L3=5，bullet 速度 6 在所有关卡都比 enemy 快。
-            eb->InitDown(bi,bm,rect,6,8);
+            // 子弹必须始终比敌机快，否则高关卡中二者同速时，子弹会像固定在小猫下方。
+            eb->InitDown(bi,bm,rect,max(7,speed+3),10);
             ebs.push_back(eb);
         }
     }
@@ -1582,20 +1616,34 @@ public:
 
 // ============ Type3: three-phase Boss with a different role per stage ============
 class ENEMY_TYPE3 : public ENEMY {
-    int totalF,patT,level,vx,ringOffset,phase;
-    ULONGLONG transitionUntil;
-    float drawScale;        // 视觉放大倍数（不动 sprite 原图，rect 用 scale 后尺寸，Draw 时居中）
+    int totalF,patT,level,vx,ringOffset,phase,difficultyMode;
+    ULONGLONG transitionUntil,berserkCountdownUntil;
+    bool berserkPending,berserkJustEntered;
+    float drawScale;
     void UpdatePhase(){
         if(is_died)return;
-        int next=hp*100>maxHp*55?1:(hp*100>maxHp*25?2:3);
-        if(next!=phase){phase=next;transitionUntil=GetTickCount()+700;patT=0;PlayGameSound(SOUND_BOSS);}
+        ULONGLONG now=GetTickCount();
+        if(berserkPending){
+            if(now>=berserkCountdownUntil){
+                berserkPending=false;berserkJustEntered=true;phase=3;transitionUntil=now;patT=0;PlayGameSound(SOUND_BOSS);
+            }
+            return;
+        }
+        int next=hp*100>maxHp*55?1:(hp*100>maxHp*40?2:3);
+        if(next==3&&phase<3){
+            // 狂暴前只做一段很短的文字预警；预警期间保持第二阶段的正常移动和开火。
+            berserkPending=true;berserkCountdownUntil=now+900;PlayGameSound(SOUND_BOSS);
+        }else if(next!=phase){phase=next;transitionUntil=now+700;patT=0;PlayGameSound(SOUND_BOSS);}
     }
 public:
-    ENEMY_TYPE3(int stage,int mode){
-        level=stage;
-        hp=maxHp=(mode==2?95:70)+stage*(mode==2?42:35);
+    ENEMY_TYPE3(int stage,int mode,int difficulty=2){
+        level=stage;difficultyMode=difficulty;
+        int originalHp=(mode==2?95:70)+stage*(mode==2?42:35);
+        hp=maxHp=difficulty==1?max(1,originalHp/2):originalHp;
         scoreVal=stage*100;totalF=12;patT=0;vx=2+stage;ringOffset=0;phase=1;transitionUntil=0;
-        drawScale=1.35f;  // boss 视觉放大 35%
+        berserkCountdownUntil=0;berserkPending=false;berserkJustEntered=false;
+        // 精灵已经在载入时缩小；碰撞框与实际画面保持一致，避免首领过大、过于容易命中。
+        drawScale=1.0f;
         int bw=gBossSprite->GetWidth(), bh=gBossSprite->GetHeight();
         int rw=(int)lroundf(bw*drawScale), rh=(int)lroundf(bh*drawScale);
         rect.left=WIDTH/2-rw/2;rect.right=rect.left+rw;
@@ -1649,24 +1697,44 @@ public:
     bool IsBoss()override{return true;}
     Kind GetKind() const override { return KIND_BOSS; }
     int GetPhase()const override{return phase;}
-    bool IsTransitioning()const override{return GetTickCount()<transitionUntil;}
-    void RestoreHP(int savedHp){hp=max(1,min(maxHp,savedHp));phase=hp*100>maxHp*55?1:(hp*100>maxHp*25?2:3);}
+    bool IsTransitioning()const override{return !berserkPending&&GetTickCount()<transitionUntil;}
+    int GetBerserkCountdown()const override{
+        if(!berserkPending)return 0;ULONGLONG now=GetTickCount();
+        return now>=berserkCountdownUntil?0:(int)((berserkCountdownUntil-now+999)/1000);
+    }
+    void OnPause(ULONGLONG duration)override{
+        ENEMY::OnPause(duration);
+        if(transitionUntil)transitionUntil+=duration;
+        if(berserkCountdownUntil)berserkCountdownUntil+=duration;
+    }
+    void RestoreHP(int savedHp){
+        hp=max(1,min(maxHp,savedHp));int restored=hp*100>maxHp*55?1:(hp*100>maxHp*40?2:3);
+        phase=restored==3?2:restored;berserkPending=false;berserkJustEntered=false;berserkCountdownUntil=0;transitionUntil=0;
+    }
+    // 预警期间也持续调用，让首领保持移动并继续按当前阶段开火。
     bool CanAttack()override{return true;}
     void GetBullets(vector<EBULLET*>& ebs,IMAGE& bi,IMAGE& bm)override{
-        UpdatePhase();Move();patT++;
+        UpdatePhase();Move();if(IsTransitioning())return;patT++;
         int fanInterval=phase==3?max(48,82-level*10):max(72,245-level*28-phase*32);
-        if(patT%fanInterval==0){
-            int spread=20+level*15+phase*10,step=phase==3?12:20;
-            for(int a=-spread;a<=spread;a+=step){float rad=a*PI/180.0f;EBULLET* eb=new EBULLET();eb->Init(bi,bm,rect,sinf(rad),cosf(rad),phase==3?5:3);ebs.push_back(eb);}
+        if(difficultyMode==1)fanInterval*=2;
+        bool fireFanNow=berserkJustEntered||patT%fanInterval==0;
+        berserkJustEntered=false;
+        if(fireFanNow){
+            int spread=20+level*15+phase*10,step=phase==3?(difficultyMode==1?24:12):20;
+            for(int a=-spread;a<=spread;a+=step){float rad=a*PI/180.0f;EBULLET* eb=new EBULLET();eb->Init(bi,bm,rect,sinf(rad),cosf(rad),phase==3?(difficultyMode==1?3:5):3);ebs.push_back(eb);}
         }
         // Stage 3 introduces rings and true side-to-side sweeping lasers.
-        if(level>=3&&phase>=2&&patT%(phase==3?220:430)==0){
-            ringOffset=(ringOffset+11)%45;int step=phase==3?24:36;
-            for(int a=ringOffset;a<360+ringOffset;a+=step){float rad=a*PI/180.0f;EBULLET* eb=new EBULLET();eb->Init(bi,bm,rect,sinf(rad),cosf(rad),phase==3?3:2);ebs.push_back(eb);}
+        int ringInterval=phase==3?220:430;if(difficultyMode==1)ringInterval*=2;
+        if(level>=3&&phase>=2&&patT%ringInterval==0){
+            ringOffset=(ringOffset+11)%45;int step=phase==3?(difficultyMode==1?45:24):36;
+            for(int a=ringOffset;a<360+ringOffset;a+=step){float rad=a*PI/180.0f;EBULLET* eb=new EBULLET();eb->Init(bi,bm,rect,sinf(rad),cosf(rad),phase==3?(difficultyMode==1?2:3):2);ebs.push_back(eb);}
         }
-        if(level>=3&&phase>=2&&patT%(phase==3?260:460)==0){
-            bool fromLeft=((patT/(phase==3?260:460)+ringOffset)&1)==0;
-            EBULLET* laser=new EBULLET();laser->InitSweepLaser(rect.bottom,fromLeft,phase==3?62:82,phase==3?125:110);ebs.push_back(laser);
+        int laserInterval=phase==3?260:460;if(difficultyMode==1)laserInterval*=2;
+        if(level>=3&&phase>=2&&patT%laserInterval==0){
+            bool fromLeft=((patT/laserInterval+ringOffset)&1)==0;
+            int warning=difficultyMode==1?(phase==3?100:120):(phase==3?62:82);
+            int duration=difficultyMode==1?(phase==3?90:80):(phase==3?125:110);
+            EBULLET* laser=new EBULLET();laser->InitSweepLaser(rect.bottom,fromLeft,warning,duration);ebs.push_back(laser);
         }
     }
 };
@@ -1763,12 +1831,12 @@ void DrawFreezeOverlay(ULONGLONG now){
 
 void GameStart(int mode) {
     cleardevice(); settextcolor(WHITE); settextstyle(40,0,_T("\u9ed1\u4f53"));
-    LPCTSTR modeText=runMode==1?_T("\u5173\u5361\u6a21\u5f0f"):_T("\u65e0\u5c3d\u6a21\u5f0f");
+    LPCTSTR modeText=runMode==1?(gameDifficulty==1?_T("关卡模式（简单）"):_T("关卡模式（困难）")):_T("无尽模式");
     TCHAR title[64];_stprintf_s(title,64,_T("%s - %s"),modeText,mode==1?_T("\u5355\u4eba"):_T("\u53cc\u4eba"));
     OutTextShadow(WIDTH/2-textwidth(title)/2,HEIGHT/2,title);
     settextstyle(22,0,_T("\u9ed1\u4f53"));
-    OutTextShadow(70,HEIGHT/2+60,_T("P1: WASD / \u9f20\u6807\u62d6\u52a8    \u7a7a\u683c\u5c04\u51fb"));
-    if (mode==2) OutTextShadow(70,HEIGHT/2+94,_T("P2: \u65b9\u5411\u952e\u79fb\u52a8    J / 1 / \u5c0f\u952e\u76d81\u5c04\u51fb"));
+    OutTextShadow(70,HEIGHT/2+60,_T("玩家一：W / A / S / D 移动    空格键射击"));
+    if (mode==2) OutTextShadow(70,HEIGHT/2+94,_T("玩家二：方向键移动    J / 1 / 小键盘1射击"));
     OutTextShadow(70,HEIGHT/2+128,_T("\u62fe\u53d6\u65e0\u4eba\u673a\u9053\u5177\u53ef\u53ec\u5524\u8ddf\u968f\u50da\u673a"));
     OutTextShadow(70,HEIGHT/2+176,_T("\u6309\u4efb\u610f\u952e\u5f00\u59cb"));
     ExMessage m; while (true) { if (peekmessage(&m,EX_KEY|EX_MOUSE)) return; }
@@ -1776,7 +1844,7 @@ void GameStart(int mode) {
 
 int SelectRunMode(){
     IMAGE bk;loadimage(&bk,_T("./images/bk3.png"),WIDTH,HEIGHT);
-    LPCTSTR stage=_T("\u5173\u5361\u6a21\u5f0f\uff083\u5173Boss\uff09"),endless=_T("\u65e0\u5c3d\u6a21\u5f0f\uff08\u6301\u7eed\u52a0\u96be\uff09"),back=_T("\u8fd4\u56de");RECT r1{},r2{},rb{};
+    LPCTSTR stage=_T("关卡模式（3 关首领战）"),endless=_T("无尽模式（持续加难）"),back=_T("返回");RECT r1{},r2{},rb{};
     while(true){
         BeginBatchDraw();putimage(0,0,&bk);setbkmode(TRANSPARENT);settextcolor(WHITE);settextstyle(48,0,_T("\u9ed1\u4f53"));
         LPCTSTR title=_T("\u9009\u62e9\u6e38\u620f\u7c7b\u578b");OutTextShadow(WIDTH/2-textwidth(title)/2,120,title);settextstyle(32,0,_T("\u9ed1\u4f53"));
@@ -1789,13 +1857,57 @@ int SelectRunMode(){
     }
 }
 
+int SelectDifficulty(){
+    IMAGE bk;loadimage(&bk,_T("./images/bk3.png"),WIDTH,HEIGHT);
+    RECT easyRect={70,285,WIDTH-70,430},hardRect={70,480,WIDTH-70,625},backRect={210,730,390,780};
+    // 选择人数的那次点击可能仍处于按下状态；先完整消费它，避免首次进入时直接选中简单难度。
+    ExMessage pending;
+    while(GetAsyncKeyState(VK_LBUTTON)&0x8000){
+        while(peekmessage(&pending,EX_MOUSE)){}
+        Sleep(1);
+    }
+    while(peekmessage(&pending,EX_MOUSE)){}
+    while(true){
+        BeginBatchDraw();putimage(0,0,&bk);setbkmode(TRANSPARENT);
+        settextcolor(WHITE);settextstyle(46,0,_T("黑体"));
+        LPCTSTR title=_T("选择闯关难度");OutTextShadow(WIDTH/2-textwidth(title)/2,105,title);
+
+        setfillcolor(RGB(35,82,70));setlinecolor(RGB(120,245,185));
+        solidroundrect(easyRect.left,easyRect.top,easyRect.right,easyRect.bottom,18,18);
+        roundrect(easyRect.left,easyRect.top,easyRect.right,easyRect.bottom,18,18);
+        settextcolor(RGB(175,255,210));settextstyle(34,0,_T("黑体"));outtextxy(105,305,_T("1  简单难度"));
+        settextcolor(RGB(225,245,235));settextstyle(18,0,_T("黑体"));outtextxy(95,365,_T("新手通关模式，更少敌机与弹幕，自带2枚炸弹"));
+
+        setfillcolor(RGB(82,42,48));setlinecolor(RGB(255,135,125));
+        solidroundrect(hardRect.left,hardRect.top,hardRect.right,hardRect.bottom,18,18);
+        roundrect(hardRect.left,hardRect.top,hardRect.right,hardRect.bottom,18,18);
+        settextcolor(RGB(255,185,165));settextstyle(34,0,_T("黑体"));outtextxy(105,500,_T("2  困难难度"));
+        settextcolor(RGB(245,225,225));settextstyle(18,0,_T("黑体"));outtextxy(95,560,_T("保留原闯关模式的敌机数量与完整强度"));
+
+        settextcolor(RGB(220,230,245));settextstyle(25,0,_T("黑体"));
+        LPCTSTR back=_T("返回");OutTextShadow(WIDTH/2-textwidth(back)/2,738,back);EndBatchDraw();
+
+        ExMessage m;getmessage(&m,EX_MOUSE|EX_KEY);
+        if(m.message==WM_KEYDOWN){
+            if(m.vkcode==VK_ESCAPE)return 0;
+            if(m.vkcode=='1'||m.vkcode==VK_NUMPAD1)return 1;
+            if(m.vkcode=='2'||m.vkcode==VK_NUMPAD2)return 2;
+        }
+        if(m.lbutton){
+            if(MessInPoint(m.x,m.y,easyRect))return 1;
+            if(MessInPoint(m.x,m.y,hardRect))return 2;
+            if(MessInPoint(m.x,m.y,backRect))return 0;
+        }
+    }
+}
+
 int screen2() {
     IMAGE bk; loadimage(&bk,_T("./images/bk3.png"),WIDTH,HEIGHT);
     LPCTSTR s1=_T("\u5355\u4eba\u6e38\u620f"),s2=_T("\u53cc\u4eba\u6e38\u620f"),sb=_T("\u8fd4\u56de");
     RECT r1,r2,rb;
     while (true) {
         BeginBatchDraw(); putimage(0,0,&bk); setbkmode(TRANSPARENT); settextcolor(WHITE);
-        settextstyle(50,0,_T("\u9ed1\u4f53")); OutTextShadow(WIDTH/2-textwidth(_T("\u9009\u62e9\u6a21\u5f0f"))/2,HEIGHT/10,_T("\u9009\u62e9\u6a21\u5f0f"));
+        settextstyle(50,0,_T("\u9ed1\u4f53")); OutTextShadow(WIDTH/2-textwidth(_T("选择玩家人数"))/2,HEIGHT/10,_T("选择玩家人数"));
         settextstyle(36,0,_T("\u9ed1\u4f53"));
         r1.left=WIDTH/2-textwidth(s1)/2; r1.right=r1.left+textwidth(s1);
         r1.top=HEIGHT/3; r1.bottom=r1.top+textheight(s1);
@@ -1811,8 +1923,8 @@ int screen2() {
         ExMessage m; getmessage(&m,EX_MOUSE|EX_KEY);
         if(m.message==WM_KEYDOWN&&m.vkcode==VK_ESCAPE)return 0;
         if (m.lbutton) {
-            if (MessInPoint(m.x,m.y,r1)) { GameStart(1); return 1; }
-            if (MessInPoint(m.x,m.y,r2)) { GameStart(2); return 2; }
+            if (MessInPoint(m.x,m.y,r1)) return 1;
+            if (MessInPoint(m.x,m.y,r2)) return 2;
             if (MessInPoint(m.x,m.y,rb)) return 0;
         }
     }
@@ -1843,11 +1955,11 @@ bool EnterNickname() {
         setfillcolor(RGB(245,245,255));solidrectangle(120,330,480,390);rectangle(120,330,480,390);
         settextcolor(RGB(30,80,180));settextstyle(32,0,_T("Consolas"));outtextxy(WIDTH/2-textwidth(shown.c_str())/2,344,shown.c_str());
         settextcolor(RGB(70,70,70));settextstyle(20,0,_T("\u9ed1\u4f53"));
-        LPCTSTR tip=_T("1-10\u4f4d\u82f1\u6587/\u6570\u5b57  Enter\u786e\u8ba4  Esc\u8fd4\u56de");OutTextShadow(WIDTH/2-textwidth(tip)/2,420,tip);
+        LPCTSTR tip=_T("1-10 位英文字母或数字    回车键确认    Esc 键返回");OutTextShadow(WIDTH/2-textwidth(tip)/2,420,tip);
         EndBatchDraw();
         ExMessage m;getmessage(&m,EX_KEY|EX_CHAR);
         if(m.message==WM_KEYDOWN&&m.vkcode==VK_ESCAPE){restoreGameHotkeys();return false;}
-        if(m.message==WM_KEYDOWN&&m.vkcode==VK_RETURN){playerName=input.empty()?"PLAYER":input;restoreGameHotkeys();return true;}
+        if(m.message==WM_KEYDOWN&&m.vkcode==VK_RETURN){playerName=input.empty()?"1":input;restoreGameHotkeys();return true;}
         if(m.message==WM_KEYDOWN&&m.vkcode==VK_BACK){if(!input.empty())input.pop_back();continue;}
         if(m.message==WM_CHAR&&input.size()<10){char c=(char)m.ch;if((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_')input.push_back(c);}
     }
@@ -1887,13 +1999,13 @@ void ShowRanking() {
             else{TCHAR rank[8];_stprintf_s(rank,8,_T("%d"),(int)i+1);settextcolor(RGB(155,180,210));settextstyle(19,0,_T("Consolas"));outtextxy(left+34-textwidth(rank)/2,top+14,rank);}
             wstring name(scores[i].name.begin(),scores[i].name.end());
             settextcolor(i<3?medalColors[i]:WHITE);settextstyle(18,0,_T("Consolas"));outtextxy(left+58,top+5,name.c_str());
-            TCHAR score[64];_stprintf_s(score,64,_T("SCORE  %llu"),scores[i].score);
+            TCHAR score[64];_stprintf_s(score,64,_T("得分  %llu"),scores[i].score);
             settextcolor(RGB(165,205,235));settextstyle(14,0,_T("Consolas"));outtextxy(left+58,top+29,score);
         }
     };
-    drawColumn(stageScores,22,_T("\u95ef\u5173\u6a21\u5f0f  TOP 10"),RGB(100,185,255));
-    drawColumn(endlessScores,308,_T("\u65e0\u5c3d\u6a21\u5f0f  TOP 10"),RGB(255,155,85));
-    settextcolor(RGB(190,205,225));settextstyle(19,0,_T("\u9ed1\u4f53"));LPCTSTR tip=_T("Enter / Esc \u8fd4\u56de");OutTextShadow(WIDTH/2-textwidth(tip)/2,880,tip);EndBatchDraw();
+    drawColumn(stageScores,22,_T("闯关模式  前十名"),RGB(100,185,255));
+    drawColumn(endlessScores,308,_T("无尽模式  前十名"),RGB(255,155,85));
+    settextcolor(RGB(190,205,225));settextstyle(19,0,_T("黑体"));LPCTSTR tip=_T("按回车键或 Esc 键返回");OutTextShadow(WIDTH/2-textwidth(tip)/2,880,tip);EndBatchDraw();
     ExMessage m;
     while(peekmessage(&m,EX_KEY|EX_MOUSE)){
         if(m.message==WM_KEYDOWN&&(m.vkcode==VK_RETURN||m.vkcode==VK_ESCAPE))return;
@@ -2117,11 +2229,11 @@ void ShowInstructions(){
         _T("\u706b\u529b\u589e\u5f3a"),_T("\u5c0f\u98de\u8239\u50da\u673a"),_T("\u751f\u547d\u6062\u590d"),_T("\u70b8\u5f39"),_T("\u62a4\u76fe"),
         _T("\u78c1\u5438"),_T("\u51bb\u7ed3"),_T("\u7a7f\u900f"),_T("\u8fc7\u8f7d\u72c2\u626b"),_T("\u590d\u6d3b")};
     static LPCTSTR powerDesc1[POWER_COUNT]={
-        _T("7 \u79d2\u5185\u81f3\u5c11\u540c\u65f6\u53d1\u5c04 3 \u679a\u5b50\u5f39"),_T("\u8ddf\u968f\u73a9\u5bb6 8 \u79d2, \u6bcf 360ms \u81ea\u52a8\u5c04\u51fb"),
+        _T("7 秒内至少同时发射 3 枚子弹"),_T("跟随玩家 8 秒，每 360 毫秒自动射击"),
         _T("\u7acb\u5373\u6062\u590d 1 \u70b9\u751f\u547d, \u4e0d\u8d85\u8fc7\u4e0a\u9650"),_T("\u589e\u52a0 1 \u679a\u70b8\u5f39, \u53cc\u4eba\u5171\u4eab\u6570\u91cf"),
         _T("\u62b5\u6321 1 \u6b21\u4f24\u5bb3, \u53ef\u901a\u8fc7\u5347\u7ea7\u589e\u52a0\u5bb9\u91cf"),_T("8 \u79d2\u5185\u5438\u5f15 240 \u50cf\u7d20\u8303\u56f4\u5185\u7684\u9053\u5177"),
         _T("5.5 \u79d2\u5185\u51cf\u6162\u654c\u673a\u4e0e\u654c\u65b9\u5b50\u5f39"),_T("7 \u79d2\u5185\u6211\u65b9\u5b50\u5f39\u53ef\u7a7f\u8fc7 1 \u4e2a\u76ee\u6807"),
-        _T("\u4ec5\u65e0\u5c3d TIER 3+ \u6389\u843d, 4.5 \u79d2 5 \u8def\u9ad8\u901f\u5c04\u51fb"),_T("\u4ec5\u53cc\u4eba\u6a21\u5f0f\u6389\u843d, \u7acb\u5373\u590d\u6d3b\u961f\u53cb")};
+        _T("仅无尽难度 3 级以上掉落，4.5 秒五路高速射击"),_T("仅双人模式掉落，立即复活队友")};
     static LPCTSTR powerDesc2[POWER_COUNT]={
         _T("\u53ef\u4e0e\u4fa7\u7ffc\u5b50\u5f39\u5347\u7ea7\u53e0\u52a0"),_T("\u6700\u540e 3 \u79d2\u4ece\u6162\u95ea\u9010\u6e10\u53d8\u4e3a\u5feb\u95ea"),_T("\u751f\u547d\u5df2\u6ee1\u65f6\u4e0d\u518d\u989d\u5916\u589e\u52a0"),
         _T("B / N \u53d1\u52a8, \u6e05\u5f39\u5e76\u4f24\u5bb3\u5168\u573a\u654c\u4eba"),_T("\u62a4\u76fe\u4f18\u5148\u4e8e\u751f\u547d\u503c\u627f\u53d7\u4f24\u5bb3"),_T("\u98de\u8239\u5468\u56f4\u663e\u793a\u78c1\u573a; \u6700\u540e 3 \u79d2\u52a0\u901f\u95ea\u70c1"),
@@ -2142,17 +2254,17 @@ void ShowInstructions(){
         };
         if(page==0){
             line(150,_T("\u57fa\u7840\u64cd\u4f5c"),RGB(255,205,90),27);
-            line(202,_T("P1 \u79fb\u52a8: W / A / S / D \u6216\u6309\u4f4f\u9f20\u6807\u76f8\u5bf9\u62d6\u52a8"));
-            line(246,_T("P1 \u5c04\u51fb: \u7a7a\u683c        \u70b8\u5f39: B"));
-            line(302,_T("P2 \u79fb\u52a8: \u65b9\u5411\u952e"));
-            line(346,_T("P2 \u5c04\u51fb: J / \u4e3b\u952e\u76d8 1 / \u5c0f\u952e\u76d8 1"));
-            line(390,_T("P2 \u70b8\u5f39: N        \u6682\u505c / \u4fdd\u5b58: Esc"));
+            line(202,_T("玩家一移动：W / A / S / D"));
+            line(246,_T("玩家一射击：空格键        炸弹：B"));
+            line(302,_T("玩家二移动：方向键"));
+            line(346,_T("玩家二射击：J / 主键盘 1 / 小键盘 1"));
+            line(390,_T("玩家二炸弹：N        暂停 / 保存：Esc 键"));
             line(460,_T("\u6a21\u5f0f\u4e0e\u5f97\u5206"),RGB(255,205,90),27);
-            line(512,_T("\u5173\u5361\u6a21\u5f0f: \u6311\u6218\u4e09\u5173\u4e0e\u5404\u5173 Boss"));
+            line(512,_T("关卡模式：依次挑战三关与各关首领"));
             line(556,_T("\u65e0\u5c3d\u6a21\u5f0f: \u654c\u4eba\u6570\u91cf\u4e0e\u5f3a\u5ea6\u6301\u7eed\u63d0\u5347"));
             line(600,_T("\u8fde\u51fb\u65f6\u53f3\u4fa7\u4f1a\u7528\u5927\u5b57\u663e\u793a\u5f97\u5206\u500d\u7387"));
             line(644,_T("\u8d34\u8fd1\u654c\u5f39\u5e76\u6210\u529f\u95ea\u907f\u53ef\u83b7\u5f97\u64e6\u5f39\u5206"));
-            line(704,_T("\u63d0\u793a: \u70b8\u5f39\u53ef\u6e05\u9664\u654c\u5f39\u5e76\u91cd\u521b Boss"),RGB(145,225,255),21);
+            line(704,_T("提示：炸弹可清除敌弹并重创首领"),RGB(145,225,255),21);
         }else{
             int first=page==1?0:5;
             line(140,page==1?_T("\u9053\u5177\u56fe\u9274 (1/2)"):_T("\u9053\u5177\u56fe\u9274 (2/2)"),RGB(255,205,90),27);
@@ -2164,7 +2276,7 @@ void ShowInstructions(){
                 settextcolor(RGB(235,240,255));settextstyle(18,0,_T("\u9ed1\u4f53"));outtextxy(122,y+48,powerDesc1[id]);
                 settextcolor(RGB(170,205,235));settextstyle(17,0,_T("\u9ed1\u4f53"));outtextxy(122,y+76,powerDesc2[id]);
             }
-            if(page==2)line(850,_T("\u53cc\u4eba: B \u4e0e N \u5728 280ms \u5185\u53ef\u89e6\u53d1\u5408\u4f53\u70b8\u5f39"),RGB(145,225,255),18);
+            if(page==2)line(850,_T("双人模式：B 与 N 在 280 毫秒内按下可触发合体炸弹"),RGB(145,225,255),18);
         }
         setfillcolor(RGB(45,75,115));
         if(page>0)solidroundrect(previous.left,previous.top,previous.right,previous.bottom,12,12);
@@ -2173,7 +2285,7 @@ void ShowInstructions(){
         if(page>0){LPCTSTR previousText=_T("< \u4e0a\u4e00\u9875");outtextxy((previous.left+previous.right-textwidth(previousText))/2,914,previousText);}
         if(page<2){LPCTSTR nextText=_T("\u4e0b\u4e00\u9875 >");outtextxy((next.left+next.right-textwidth(nextText))/2,914,nextText);}
         settextstyle(16,0,_T("\u9ed1\u4f53"));settextcolor(RGB(150,185,215));
-        LPCTSTR exitTip=_T("Esc \u8fd4\u83dc\u5355");outtextxy(WIDTH/2-textwidth(exitTip)/2,946,exitTip);
+        LPCTSTR exitTip=_T("按 Esc 键返回菜单");outtextxy(WIDTH/2-textwidth(exitTip)/2,946,exitTip);
         EndBatchDraw();
         ExMessage m;
         while(peekmessage(&m,EX_KEY|EX_MOUSE)){
@@ -2194,21 +2306,16 @@ int Welcome() {
     // title_bk-Sheet.png: 4帧动画，每帧600x1000 (游戏窗口尺寸)，水平排列
     AnimatedBG menuBg(_T("./images/title_bk-Sheet.png"), WIDTH, HEIGHT, 4, 6);
 
-    // ----- 新标题: title.png (517×185 RGBA) -----
-    // mask 约定：BLACK=机身（不透明），WHITE=透明（与 BuildMaskFromAlpha 一致）
+    // 保留原版英文美术标题 Cat-aclismSpace。
     IMAGE title_src, title_mask;
     {
-        IMAGE raw; loadimage(&raw, _T("./images/title.png"));
-        int tw = raw.getwidth(), th = raw.getheight();
-        title_src.Resize(tw, th);
-        DWORD* dst = GetImageBuffer(&title_src);
-        DWORD* s = GetImageBuffer(&raw);
-        for (int i = 0; i < tw * th; i++) dst[i] = s[i];
-        title_mask.Resize(tw, th);
-        DWORD* m = GetImageBuffer(&title_mask);
-        for (int i = 0; i < tw * th; i++) {
-            BYTE a = (BYTE)((dst[i] >> 24) & 0xFF);
-            m[i] = (a >= 128) ? BLACK : WHITE;
+        IMAGE raw;loadimage(&raw,_T("./images/title.png"));
+        int tw=raw.getwidth(),th=raw.getheight();title_src.Resize(tw,th);
+        DWORD* dst=GetImageBuffer(&title_src);DWORD* src=GetImageBuffer(&raw);
+        for(int i=0;i<tw*th;i++)dst[i]=src[i];
+        title_mask.Resize(tw,th);DWORD* mask=GetImageBuffer(&title_mask);
+        for(int i=0;i<tw*th;i++){
+            BYTE alpha=(BYTE)((dst[i]>>24)&0xFF);mask[i]=alpha>=128?BLACK:WHITE;
         }
     }
 
@@ -2234,9 +2341,9 @@ int Welcome() {
     const int   ufoY        = 50;
     const ULONGLONG ufoSlideMs = 500;    // 半秒
 
-    // 排版常量（避开 UFO + 新标题）
-    const int TITLE_X      = (WIDTH - 517) / 2;   // 42
-    const int TITLE_Y      = 120;                  // 标题占 y=120..305
+    // 排版常量（避开 UFO + 原版英文标题）
+    const int TITLE_X      = (WIDTH-517)/2;
+    const int TITLE_Y      = 120;
     const int PLAYER_Y     = 325;
     const int MENU_START_Y = 375;
     const int MENU_GAP     = 82;
@@ -2277,12 +2384,11 @@ int Welcome() {
         // UFO 最终位置
         putimage_mask(ufoEndX, ufoY, &ufo_src[ufoFrameNow()], &ufo_mask[ufoFrameNow()]);
 
-        // title.png 自绘标题
-        putimage_mask(TITLE_X, TITLE_Y, &title_src, &title_mask);
+        putimage_mask(TITLE_X,TITLE_Y,&title_src,&title_mask);
 
         setbkmode(TRANSPARENT);settextcolor(WHITE);
         wstring currentName(playerName.begin(),playerName.end());if(currentName.empty())currentName=_T("\u672a\u9009\u62e9");
-        TCHAR current[64];_stprintf_s(current,64,_T("\u5f53\u524d\u73a0\u5bb6: %s"),currentName.c_str());
+        TCHAR current[64];_stprintf_s(current,64,_T("\u5f53\u524d\u73a9\u5bb6: %s"),currentName.c_str());
         settextstyle(22,0,_T("\u9ed1\u4f53"));settextcolor(RGB(135,205,255));OutTextShadow(WIDTH/2-textwidth(current)/2,PLAYER_Y,current);
         settextstyle(34,0,_T("\u9ed1\u4f53"));
         for(int i=0;i<6;i++){
@@ -2296,10 +2402,11 @@ int Welcome() {
         settextstyle(18,0,_T("\u9ed1\u4f53"));
         if(saveAvailable){
             wstring savedName(coverSave.name.begin(),coverSave.name.end());TCHAR detail[128];
-            _stprintf_s(detail,128,_T("\u5b58\u6863: %s   LEVEL %d   Score %llu"),savedName.c_str(),coverSave.level,coverSave.score);
+            LPCTSTR difficultyText=coverSave.runMode==1?(coverSave.difficulty==1?_T("简单"):_T("困难")):_T("无尽");
+            _stprintf_s(detail,128,_T("存档：%s   %s   第 %d 关   得分 %llu"),savedName.c_str(),difficultyText,coverSave.level,coverSave.score);
             settextcolor(RGB(135,205,255));OutTextShadow(WIDTH/2-textwidth(detail)/2,rs[1].bottom+2,detail);
         }else{
-            LPCTSTR none=_T("\u6682\u65e0\u5b58\u6863\uff08\u6e38\u620f\u4e2d\u6309 Esc \u4fdd\u5b58\uff09");settextcolor(RGB(200,200,200));OutTextShadow(WIDTH/2-textwidth(none)/2,rs[1].bottom+2,none);
+            LPCTSTR none=_T("暂无存档（游戏中按 Esc 键保存）");settextcolor(RGB(200,200,200));OutTextShadow(WIDTH/2-textwidth(none)/2,rs[1].bottom+2,none);
         }
         EndBatchDraw();
         Sleep(20);
@@ -2321,18 +2428,18 @@ void ShowVictory(){
         setfillcolor(RGB(18,35,68));solidroundrect(42,120,WIDTH-42,835,24,24);
         setbkmode(TRANSPARENT);
         settextcolor(RGB(255,220,85));settextstyle(60,0,_T("Consolas"));
-        LPCTSTR title=_T("VICTORY!");OutTextShadowCentered(205,title);
+        LPCTSTR title=_T("胜利！");OutTextShadowCentered(205,title);
         settextcolor(RGB(220,240,255));settextstyle(30,0,_T("Consolas"));
-        LPCTSTR completed=_T("ALL 3 STAGES CLEARED");OutTextShadowCentered(315,completed);
-        wstring currentName(playerName.begin(),playerName.end());if(currentName.empty())currentName=_T("PLAYER");
-        TCHAR playerText[64];_stprintf_s(playerText,64,_T("PLAYER: %s"),currentName.c_str());
+        LPCTSTR completed=_T("三关已全部通关");OutTextShadowCentered(315,completed);
+        wstring currentName(playerName.begin(),playerName.end());if(currentName.empty())currentName=_T("玩家");
+        TCHAR playerText[64];_stprintf_s(playerText,64,_T("玩家：%s"),currentName.c_str());
         settextcolor(RGB(145,210,255));settextstyle(25,0,_T("Consolas"));OutTextShadowCentered(410,playerText);
-        TCHAR scoreText[96];_stprintf_s(scoreText,96,_T("FINAL SCORE: %llu"),totalScore);
+        TCHAR scoreText[96];_stprintf_s(scoreText,96,_T("最终得分：%llu"),totalScore);
         settextcolor(WHITE);settextstyle(42,0,_T("Consolas"));OutTextShadowCentered(505,scoreText);
         settextcolor(RGB(180,230,255));settextstyle(21,0,_T("Consolas"));
-        LPCTSTR rankTip=_T("SCORE SAVED TO STAGE LEADERBOARD");OutTextShadowCentered(610,rankTip);
+        LPCTSTR rankTip=_T("成绩已保存到闯关排行榜");OutTextShadowCentered(610,rankTip);
         settextcolor(RGB(230,235,245));settextstyle(20,0,_T("Consolas"));
-        LPCTSTR tip=_T("PRESS ENTER OR CLICK TO RETURN");OutTextShadowCentered(750,tip);
+        LPCTSTR tip=_T("按回车键或点击鼠标返回");OutTextShadowCentered(750,tip);
         EndBatchDraw();
         ExMessage m;
         while(peekmessage(&m,EX_KEY|EX_MOUSE))
@@ -2344,27 +2451,18 @@ void ShowVictory(){
 void Over() {
     PlayMusic(MUSIC_OVER);
 
-    // --- 加载 GameOver 资源 ---
-    constexpr int TEXTS_FRAMES = 2;
-    constexpr int TEXTS_FW = 1006 / TEXTS_FRAMES;  // 503
-    constexpr int TEXTS_FH = 127;
-    IMAGE goTexts_src[TEXTS_FRAMES];
-    IMAGE goTexts_mask[TEXTS_FRAMES];
+    // --- 加载结算动画资源 ---
     IMAGE goAnim1_src, goAnim1_mask;
     IMAGE goAnim2_src, goAnim2_mask;
-    LoadSpriteSheetFrames(goTexts_src, TEXTS_FRAMES, _T("./images/gameover_texts-Sheet.png"), TEXTS_FW, TEXTS_FH);
-    BuildMaskArrayFromAlpha(goTexts_src, goTexts_mask, TEXTS_FRAMES, TEXTS_FW, TEXTS_FH);
     loadimage(&goAnim1_src, _T("./images/gameover_anim1.png"));
     BuildMaskArrayFromAlpha(&goAnim1_src, &goAnim1_mask, 1, goAnim1_src.getwidth(), goAnim1_src.getheight());
     loadimage(&goAnim2_src, _T("./images/gameover_anim2.png"));
     BuildMaskArrayFromAlpha(&goAnim2_src, &goAnim2_mask, 1, goAnim2_src.getwidth(), goAnim2_src.getheight());
 
     // --- 布局 ---
-    const int textsW = TEXTS_FW;       // 503
-    const int textsH = TEXTS_FH;       // 127
+    const int textsH = 127;
     const int animW  = goAnim1_src.getwidth();   // 274
     const int animH  = goAnim1_src.getheight();  // 319
-    const int textsX = (WIDTH - textsW) / 2;
     const int textsY = 90;                       // 靠上
     const int animX  = (WIDTH - animW) / 2;
     const int animY  = textsY + textsH + 80;     // 文字下方，居中靠中
@@ -2374,10 +2472,9 @@ void Over() {
     // --- 准备文案 ---
     TCHAR sScore[128];
     _stprintf_s(sScore, 128, _T("\u603b\u5f97\u5206\uff1a%llu"), totalScore);
-    LPCTSTR sTip = _T("\u6309 Enter \u952e\u8fd4\u56de\u4e3b\u83dc\u5355");
+    LPCTSTR sTip = _T("按回车键返回主菜单");
 
     ULONGLONG t0 = GetTickCount();
-    int  textFrame = 0;        // 0 or 1 - 抖动文字帧（图自带抖动效果）
     int  animState = 0;        // 0=显示1(1秒), 1=闪烁过渡, 2=显示2
     ULONGLONG animStateAt = t0;
     int  blinkCount = 0;       // 已完成闪烁次数
@@ -2402,15 +2499,9 @@ void Over() {
         // ---- 1) 黑底 ----
         setbkcolor(BLACK); cleardevice();
 
-        // ---- 2) 文字（图自带抖动动画帧，每 80ms 切帧） ----
-        ULONGLONG textsPeriod = 80;
-        if (now - t0 >= textsPeriod) {
-            int step = (int)((now - t0) / textsPeriod);
-            textFrame = (textFrame + step) % TEXTS_FRAMES;
-            t0 += step * textsPeriod;
-        }
-        putimage_mask(textsX, textsY,
-            &goTexts_src[textFrame], &goTexts_mask[textFrame]);
+        // ---- 2) 中文结算标题 ----
+        setbkmode(TRANSPARENT);settextcolor(RGB(255,120,105));settextstyle(58,0,_T("黑体"));
+        LPCTSTR overTitle=_T("游戏结束");OutTextShadowCentered(textsY+25,overTitle);
 
         // ---- 3) 动画：先1，再闪烁2次到2 ----
         if (animState == 0) {
@@ -2458,13 +2549,14 @@ void Over() {
 }
 
 int PauseMenu() {
-    PlayMusic(MUSIC_PAUSE);
-    LPCTSTR tc=_T("  \u7ee7\u7eed\u6e38\u620f  "),ts=_T(" \u4fdd\u5b58\u5e76\u8fd4\u56de\u83dc\u5355 "),tm=_T("  \u653e\u5f03\u8fd4\u56de\u83dc\u5355  "),te=_T("  \u9000\u51fa\u6e38\u620f  ");
-    RECT cr,sr,mr,er;
+    BeginPauseAudio();
+    LPCTSTR tc=_T("  \u7ee7\u7eed\u6e38\u620f  "),tr=_T("  \u91cd\u65b0\u5f00\u59cb  "),ts=_T(" \u4fdd\u5b58\u5e76\u8fd4\u56de\u83dc\u5355 "),tm=_T("  \u653e\u5f03\u8fd4\u56de\u83dc\u5355  "),te=_T("  \u9000\u51fa\u6e38\u620f  ");
+    RECT cr,rr,sr,mr,er;
     settextstyle(28,0,_T("\u9ed1\u4f53"));
     cr.left=WIDTH/2-textwidth(tc)/2-20; cr.right=cr.left+textwidth(tc)+40;
-    cr.top=HEIGHT/2-105; cr.bottom=cr.top+45;
-    sr.left=WIDTH/2-textwidth(ts)/2-20;sr.right=sr.left+textwidth(ts)+40;sr.top=cr.bottom+15;sr.bottom=sr.top+45;
+    cr.top=HEIGHT/2-145; cr.bottom=cr.top+45;
+    rr.left=WIDTH/2-textwidth(tr)/2-20;rr.right=rr.left+textwidth(tr)+40;rr.top=cr.bottom+15;rr.bottom=rr.top+45;
+    sr.left=WIDTH/2-textwidth(ts)/2-20;sr.right=sr.left+textwidth(ts)+40;sr.top=rr.bottom+15;sr.bottom=sr.top+45;
     mr.left=WIDTH/2-textwidth(tm)/2-20; mr.right=mr.left+textwidth(tm)+40;mr.top=sr.bottom+15; mr.bottom=mr.top+45;
     er.left=WIDTH/2-textwidth(te)/2-20; er.right=er.left+textwidth(te)+40;
     er.top=mr.bottom+15; er.bottom=er.top+45;
@@ -2476,6 +2568,8 @@ int PauseMenu() {
     setfillcolor(RGB(50,50,70)); setlinecolor(RGB(90,90,120));
     solidrectangle(cr.left,cr.top,cr.right,cr.bottom); rectangle(cr.left,cr.top,cr.right,cr.bottom);
     settextcolor(RGB(200,220,255)); outtextxy(cr.left+20,cr.top+8,tc);
+    setfillcolor(RGB(48,66,92));solidrectangle(rr.left,rr.top,rr.right,rr.bottom);rectangle(rr.left,rr.top,rr.right,rr.bottom);
+    settextcolor(RGB(150,215,255));outtextxy(rr.left+20,rr.top+8,tr);
     setfillcolor(RGB(42,75,62));solidrectangle(sr.left,sr.top,sr.right,sr.bottom);rectangle(sr.left,sr.top,sr.right,sr.bottom);
     settextcolor(RGB(180,255,210));outtextxy(sr.left+20,sr.top+8,ts);
     setfillcolor(RGB(60,50,50)); solidrectangle(mr.left,mr.top,mr.right,mr.bottom);
@@ -2485,20 +2579,50 @@ int PauseMenu() {
     rectangle(er.left,er.top,er.right,er.bottom);
     settextcolor(RGB(255,150,150)); outtextxy(er.left+20,er.top+8,te);
     EndBatchDraw();
+
+    // Do not block waiting for the opening Esc press to be released. Mouse
+    // choices stay responsive immediately; Esc itself is accepted again only
+    // after a key-up has been observed.
+    ExMessage pending;
+    while (peekmessage(&pending,EX_KEY|EX_CHAR)) {}
+    bool escReleased=(GetAsyncKeyState(VK_ESCAPE)&0x8000)==0;
+    auto finish=[](int command){EndPauseAudio(command==0||command==4);return command;};
+
     while (true) {
         ExMessage m; getmessage(&m,EX_KEY|EX_MOUSE);
-        if ((m.message==WM_KEYDOWN&&m.vkcode==VK_ESCAPE)||(m.lbutton&&MessInPoint(m.x,m.y,cr))) {
-            while(peekmessage(&m,EX_KEY)); return 0;
+        if(!escReleased&&((m.message==WM_KEYUP&&m.vkcode==VK_ESCAPE)||
+            (GetAsyncKeyState(VK_ESCAPE)&0x8000)==0))escReleased=true;
+        if ((escReleased&&m.message==WM_KEYDOWN&&m.vkcode==VK_ESCAPE)||(m.lbutton&&MessInPoint(m.x,m.y,cr))) {
+            while(peekmessage(&m,EX_KEY|EX_CHAR));
+            return finish(0);
         }
-        if ((m.message==WM_KEYDOWN&&m.vkcode==49)||(m.lbutton&&MessInPoint(m.x,m.y,sr))) return 3;
-        if ((m.message==WM_KEYDOWN&&m.vkcode==50)||(m.lbutton&&MessInPoint(m.x,m.y,mr))) return 1;
+        if ((m.message==WM_KEYDOWN&&m.vkcode=='R')||(m.lbutton&&MessInPoint(m.x,m.y,rr))) return finish(4);
+        if ((m.message==WM_KEYDOWN&&m.vkcode==49)||(m.lbutton&&MessInPoint(m.x,m.y,sr))) return finish(3);
+        if ((m.message==WM_KEYDOWN&&m.vkcode==50)||(m.lbutton&&MessInPoint(m.x,m.y,mr))) return finish(1);
         if ((m.message==WM_KEYDOWN&&m.vkcode==51)||(m.lbutton&&MessInPoint(m.x,m.y,er))) { CloseGameAudio();closegraph();timeEndPeriod(1);exit(0);return 2; }
-        Sleep(30);
     }
 }
 void SpawnEnemy(vector<ENEMY*>& es, IMAGE& e1i, IMAGE& e1m, IMAGE* e1b, IMAGE* e1bm,
-    IMAGE& e2i, IMAGE& e2m, IMAGE* e2b, IMAGE* e2bm, int level, int mode) {
+    IMAGE& e2i, IMAGE& e2m, IMAGE* e2b, IMAGE* e2bm, int level, int mode, int difficulty) {
     int r = rand() % 100;
+    if(difficulty==1){
+        // Easy mode spawns one enemy at a time and favours the basic types.
+        // Hard mode below intentionally preserves the original distribution.
+        if(level==1){
+            if(r<78)es.push_back(new ENEMY_TYPE1(level,mode));
+            else es.push_back(new ENEMY_TYPE2(level,mode));
+        }else if(level==2){
+            if(r<48)es.push_back(new ENEMY_TYPE1(level,mode));
+            else if(r<82)es.push_back(new ENEMY_TYPE2(level,mode));
+            else es.push_back(new ENEMY_TYPE4(e2i,e2m,e2b,e2bm,level,mode));
+        }else{
+            if(r<32)es.push_back(new ENEMY_TYPE1(level,mode));
+            else if(r<65)es.push_back(new ENEMY_TYPE2(level,mode));
+            else if(r<88)es.push_back(new ENEMY_TYPE4(e2i,e2m,e2b,e2bm,level,mode));
+            else es.push_back(new ENEMY_TYPE5(e2i,e2m,e2b,e2bm,level,mode));
+        }
+        return;
+    }
     if (level==1) {
         if (r<70) es.push_back(new ENEMY_TYPE1(level,mode));
         else es.push_back(new ENEMY_TYPE2(level,mode));
@@ -2522,8 +2646,9 @@ void SpawnEnemy(vector<ENEMY*>& es, IMAGE& e1i, IMAGE& e1m, IMAGE* e1b, IMAGE* e
     }
 }
 
-void TryDropPowerup(vector<POWERUP*>& items,RECT where,POWER_ART art[],int level,int mode,int selectedRunMode){
+void TryDropPowerup(vector<POWERUP*>& items,RECT where,POWER_ART art[],int level,int mode,int selectedRunMode,int difficulty){
     int dropChance=max(7,(mode==2?19:15)-(min(level,3)-1)*2);
+    if(selectedRunMode==1&&difficulty==1)dropChance=min(35,dropChance+8);
     if(rand()%100>=dropChance)return;
     vector<pair<POWER_TYPE,int>> pool={{POWER_FIRE,16},{POWER_DRONE,10},{POWER_LIFE,14},{POWER_BOMB,11},
         {POWER_SHIELD,12},{POWER_MAGNET,10},{POWER_FREEZE,9},{POWER_PIERCE,8}};
@@ -2552,12 +2677,12 @@ int UpgradeSelect(IMAGE& background,UPGRADE_STATE& u,int clearedLevel){
     static LPCTSTR names[8]={_T("\u5b50\u5f39\u4f24\u5bb3 +1"),_T("\u5c04\u901f +15%"),_T("\u5b50\u5f39\u7a7f\u900f 1 \u6b21"),_T("\u4fa7\u7ffc\u5b50\u5f39 20 \u79d2"),
         _T("\u79fb\u52a8\u901f\u5ea6 +15%"),_T("\u62a4\u76fe\u5bb9\u91cf +1"),_T("\u70b8\u5f39\u4f24\u5bb3\u63d0\u5347"),_T("\u4f4e\u8840\u91cf\u53cc\u500d\u4f24\u5bb3")};
     static LPCTSTR desc[8]={_T("\u6240\u6709\u6211\u65b9\u5b50\u5f39\u9020\u6210\u66f4\u9ad8\u4f24\u5bb3"),_T("\u7f29\u77ed\u6bcf\u6b21\u5c04\u51fb\u95f4\u9694"),_T("\u547d\u4e2d\u540e\u53ef\u7ee7\u7eed\u98de\u884c\u4e00\u6b21"),_T("\u4e0b\u4e00\u5173\u5f00\u59cb\u540e\u9650\u65f6\u589e\u52a0\u4fa7\u5411\u5f39"),
-        _T("\u6bcf\u7ea7 +15%, \u4e24\u540d\u73a9\u5bb6\u5747\u751f\u6548"),_T("\u53ef\u540c\u65f6\u4fdd\u7559\u66f4\u591a\u62a4\u76fe"),_T("\u589e\u5f3a\u666e\u901a\u4e0e\u5408\u4f53\u70b8\u5f39"),_T("HP=1 \u65f6\u5b50\u5f39\u4f24\u5bb3\u7ffb\u500d")};
+        _T("每级 +15%，两名玩家均生效"),_T("可同时保留更多护盾"),_T("增强普通与合体炸弹"),_T("生命值为 1 时子弹伤害翻倍")};
     int choices[3];for(int i=0;i<3;i++){bool duplicate;do{choices[i]=rand()%8;duplicate=false;for(int j=0;j<i;j++)if(choices[j]==choices[i])duplicate=true;}while(duplicate);}
     RECT cards[3];
     while(true){
         BeginBatchDraw();putimage(0,0,WIDTH,HEIGHT,&background,0,0);setbkmode(TRANSPARENT);settextcolor(RGB(245,245,255));settextstyle(42,0,_T("\u9ed1\u4f53"));
-        TCHAR title[64];_stprintf_s(title,64,_T("LEVEL %d \u5b8c\u6210 - \u4e09\u9009\u4e00\u5347\u7ea7"),clearedLevel);outtextxy(WIDTH/2-textwidth(title)/2,105,title);
+        TCHAR title[64];_stprintf_s(title,64,_T("第 %d 关完成 - 三选一升级"),clearedLevel);outtextxy(WIDTH/2-textwidth(title)/2,105,title);
         for(int i=0;i<3;i++){cards[i]={55,245+i*190,545,390+i*190};
             setfillcolor(i==0?RGB(35,75,130):RGB(50,55,85));setlinecolor(RGB(170,215,255));solidrectangle(cards[i].left,cards[i].top,cards[i].right,cards[i].bottom);rectangle(cards[i].left,cards[i].top,cards[i].right,cards[i].bottom);
             TCHAR number[8];_stprintf_s(number,8,_T("%d"),i+1);settextcolor(RGB(255,220,80));settextstyle(33,0,_T("Consolas"));outtextxy(78,cards[i].top+25,number);
@@ -2574,7 +2699,7 @@ int UpgradeSelect(IMAGE& background,UPGRADE_STATE& u,int clearedLevel){
 
 bool Play(bool resumeGame=false) {
     SAVE_DATA saved; bool resuming=resumeGame&&LoadSave(saved);
-    if(resuming){gameMode=saved.mode;runMode=saved.runMode;playerName=saved.name;}
+    if(resuming){gameMode=saved.mode;runMode=saved.runMode;gameDifficulty=saved.difficulty;playerName=saved.name;}
     HWND gameWindow = GetHWnd();
     LONG_PTR exStyle = GetWindowLongPtr(gameWindow, GWL_EXSTYLE);
     exStyle &= ~(WS_EX_NOACTIVATE | WS_EX_TRANSPARENT);
@@ -2593,10 +2718,11 @@ bool Play(bool resumeGame=false) {
     settextcolor(RGB(225,240,255));settextstyle(34,0,_T("\u9ed1\u4f53"));
     LPCTSTR loadingText=_T("\u6b63\u5728\u8fdb\u5165\u6e38\u620f...");OutTextShadowCentered(470,loadingText);
     settextcolor(RGB(125,205,255));settextstyle(19,0,_T("Consolas"));
-    LPCTSTR loadingTip=_T("LOADING ASSETS");OutTextShadowCentered(525,loadingTip);EndBatchDraw();
+    LPCTSTR loadingTip=_T("资源加载中");OutTextShadowCentered(525,loadingTip);EndBatchDraw();
     totalScore = resuming?saved.score:0;
     gameWon = false;
     bool is_play = true, p1Dead = false, p2Dead = false;
+    bool restartRequested=false;
     bool recordResult=false;
     int bsing = 0;
 
@@ -2611,7 +2737,7 @@ bool Play(bool resumeGame=false) {
     IMAGE enemy2_death_src, enemy2_death_mask;
     IMAGE fire_icon,fire_mask,life_icon,life_mask,bomb_icon,bomb_mask,shield_icon,shield_mask,drone_icon,drone_mask;
     IMAGE magnet_icon,magnet_mask,freeze_icon,freeze_mask,pierce_icon,pierce_mask,overload_icon,overload_mask,revive_icon,revive_mask;
-    IMAGE bk_image;
+    IMAGE bk_level1,bk_level2,bk_level3;
 
     // Both players use the same spaceship silhouette.  P1 keeps the original
     // blue palette; P2 and its wingman are recoloured below for identification.
@@ -2764,10 +2890,11 @@ bool Play(bool resumeGame=false) {
         {&magnet_icon,&magnet_mask},{&freeze_icon,&freeze_mask},{&pierce_icon,&pierce_mask},{&overload_icon,&overload_mask},{&revive_icon,&revive_mask}
     };
 
-    // Background
-    // Keep the complete 600x3000 artwork.  The background scroller wraps it
-    // continuously instead of resizing it and jumping between screen halves.
-    loadimage(&bk_image, _T("./images/bk2.png"));
+    // Stage backgrounds. Level 1 keeps the original artwork; levels 2 and 3
+    // use their supplied 600px-wide vertical scrolling scenes.
+    loadimage(&bk_level1,_T("./images/bk2.png"));
+    loadimage(&bk_level2,_T("./images/bk_level2.png"));
+    loadimage(&bk_level3,_T("./images/bk_level3.png"));
 
     // Enemy1 explosions (original src+mask)
     IMAGE e1boom[3], e1boom_mask[3];
@@ -2791,7 +2918,17 @@ bool Play(bool resumeGame=false) {
         loadimage(&e2boom_mask[i], e2F[i*2+1]);
     }
 
-    BK bk(bk_image);
+    BK bk1(bk_level1),bk2(bk_level2),bk3(bk_level3);
+    auto currentBackground=[&](int level) -> IMAGE& {
+        if(runMode==1&&level==2)return bk_level2;
+        if(runMode==1&&level>=3)return bk_level3;
+        return bk_level1;
+    };
+    auto currentScroller=[&](int level) -> BK& {
+        if(runMode==1&&level==2)return bk2;
+        if(runMode==1&&level>=3)return bk3;
+        return bk1;
+    };
 
     // HP UI 资源 (icon + 心形)
     IMAGE icon1_img, icon2_img, heart1_img, heart2_img;
@@ -2803,7 +2940,8 @@ bool Play(bool resumeGame=false) {
     // 初始化小怪精灵图与统一爆炸图
     if (!gEnemy1Sprite) gEnemy1Sprite = new AnimatedSprite(_T("./images/enemy1-Sheet.png"), 57, 57, 2, 6);
     if (!gEnemy2Sprite) gEnemy2Sprite = new AnimatedSprite(_T("./images/enemy2_sheets.png"), 77, 72, 3, 8, _T("./images/enemy2_attack.png"));
-    if (!gBossSprite) gBossSprite = new AnimatedSprite(_T("./images/boss-Sheet.png"), 203, 185, 4, 6);
+    // 首领原图先整体缩放再拆帧，显示尺寸与碰撞框都使用 166x151。
+    if (!gBossSprite) gBossSprite = new AnimatedSprite(_T("./images/boss-Sheet.png"), 166, 151, 4, 6, nullptr, true);
     if (!gSmallBoom) gSmallBoom = new BoomSheet(_T("./images/boom_enermu-Sheet.png"), 60, 60, 5);
 
     // P1 使用精灵表动画 (player-Sheet.png: 3帧)
@@ -2878,12 +3016,11 @@ bool Play(bool resumeGame=false) {
     ULONGLONG wingShootClock1=0,wingShootClock2=0;
     ULONGLONG p1DeathAt=0,p2DeathAt=0,linkShieldReadyAt=0;
     ULONGLONG shakeUntil=0,bombFxUntil=0,phaseBannerUntil=0,bossSummonClock=0;
-    int bombCount=0;
+    int bombCount=(runMode==1&&gameDifficulty==1)?2:0;
     bool bombLast=false,bomb2Last=false;int pendingBombPlayer=0;ULONGLONG pendingBombAt=0;
     int comboCount=0,grazeCount=0,p1Kills=0,p2Kills=0,p1Contribution=0,p2Contribution=0,lastBossPhase=1;
     ULONGLONG comboLastKill=0;
     UPGRADE_STATE upgrade;
-    bool mouseDragging=false;int lastMouseX=0,lastMouseY=0;
     bool escLast=false;
 
     if(resuming){
@@ -2898,7 +3035,7 @@ bool Play(bool resumeGame=false) {
         droneUntil1=gameStart+max(0,saved.p1DroneMs);droneUntil2=gameStart+max(0,saved.p2DroneMs);
         bossActive=saved.bossActive;
         if(bossActive){
-            ENEMY_TYPE3* boss=new ENEMY_TYPE3(currentLevel,gameMode);
+            ENEMY_TYPE3* boss=new ENEMY_TYPE3(currentLevel,gameMode,gameDifficulty);
             boss->RestoreHP(saved.bossHp);es.push_back(boss);
         }
     }else{me.SetUpgradeBonuses(upgrade.moveSpeed,upgrade.shieldCapacity);me2.SetUpgradeBonuses(upgrade.moveSpeed,upgrade.shieldCapacity);}
@@ -2926,18 +3063,40 @@ bool Play(bool resumeGame=false) {
         bool pauseRequested=escNow&&!escLast;escLast=escNow;
         ExMessage keyMessage;
         while(peekmessage(&keyMessage,EX_KEY|EX_CHAR))
-            if(keyMessage.message==WM_KEYDOWN&&keyMessage.vkcode==VK_ESCAPE)pauseRequested=true;
+            if(keyMessage.message==WM_KEYDOWN&&keyMessage.vkcode==VK_ESCAPE&&!escLast)pauseRequested=true;
         if(pauseRequested){
             while(peekmessage(&keyMessage,EX_KEY|EX_CHAR));
-            MUSIC_TRACK resumeMusic=GameplayMusic(runMode,currentLevel,bossActive);
+            ULONGLONG pauseStarted=GetTickCount();
             int cmd=PauseMenu();
-            lastPlayerFrameAt=GetTickCount();gPlayerMoveScale=1.0f;
+            ULONGLONG pauseEnded=GetTickCount(),pauseDuration=pauseEnded-pauseStarted;
+            lastPlayerFrameAt=pauseEnded;gPlayerMoveScale=1.0f;
             escLast=(GetAsyncKeyState(VK_ESCAPE)&0x8000)!=0;
-            if(cmd==0)PlayMusic(resumeMusic);
+            while(peekmessage(&keyMessage,EX_KEY|EX_CHAR));
+            if(cmd==0){
+                // Pause time must not advance waves, buffs, cooldowns or death
+                // animations. Shift every absolute gameplay timestamp forward.
+                auto shift=[&](ULONGLONG& value){if(value)value+=pauseDuration;};
+                levelStart+=pauseDuration;lastSpawn+=pauseDuration;levelBannerUntil+=pauseDuration;
+                shift(firePowerUntil1);shift(firePowerUntil2);shift(droneUntil1);shift(droneUntil2);
+                shift(magnetUntil1);shift(magnetUntil2);shift(pierceUntil1);shift(pierceUntil2);
+                shift(overloadUntil1);shift(overloadUntil2);shift(overloadCooldown1);shift(overloadCooldown2);
+                shift(freezeUntil);shift(sideBulletUntil);shift(wingShootClock1);shift(wingShootClock2);
+                shift(p1DeathAt);shift(p2DeathAt);shift(linkShieldReadyAt);shift(shakeUntil);shift(bombFxUntil);
+                shift(phaseBannerUntil);shift(bossSummonClock);shift(pendingBombAt);shift(comboLastKill);
+                shift(deathAnimFrameAt);shift(deathPhaseAt);shift(phase21EnterAt);
+                if(p1ShootClock)p1ShootClock+=pauseDuration;if(p2ShootClock)p2ShootClock+=pauseDuration;
+                me.OnPause(pauseDuration);me2.OnPause(pauseDuration);
+                for(auto enemy:es)enemy->OnPause(pauseDuration);
+                // Continue this frame from the resume instant. Using the
+                // pre-pause frame timestamp with shifted clocks would make
+                // unsigned elapsed-time calculations wrap around.
+                frameStart=pauseEnded;
+            }
             else if(cmd==1){is_play=false;break;}
             else if(cmd==2)exit(0);
+            else if(cmd==4){restartRequested=true;is_play=false;break;}
             else if(cmd==3){
-                SAVE_DATA s;s.name=playerName;s.mode=gameMode;s.runMode=runMode;s.score=totalScore;s.level=currentLevel;
+                SAVE_DATA s;s.name=playerName;s.mode=gameMode;s.runMode=runMode;s.difficulty=gameDifficulty;s.score=totalScore;s.level=currentLevel;
                 s.levelScoreStart=levelScoreStart;s.levelElapsedMs=levelElapsedBase+frameStart-levelStart;s.bossActive=bossActive;s.bombCount=bombCount;
                 s.p1Hp=me.GetHP();s.p1Dead=p1Dead;s.p1Shield=me.HasShield();s.p1Rect=me.GetRect();
                 s.p2Hp=me2.GetHP();s.p2Dead=p2Dead;s.p2Shield=me2.HasShield();s.p2Rect=me2.GetRect();
@@ -2967,21 +3126,10 @@ bool Play(bool resumeGame=false) {
             }
         }
 
-        // Relative mouse dragging: pressing only starts a drag. The ship moves
-        // by the cursor delta and can no longer teleport to the click point.
+        // Gameplay is keyboard-only. Drain mouse messages so a click made
+        // during combat cannot be replayed later on a menu.
         ExMessage mouseMessage;
-        while(peekmessage(&mouseMessage,EX_MOUSE)){
-            if(mouseMessage.message==WM_LBUTTONDOWN){
-                mouseDragging=true;lastMouseX=mouseMessage.x;lastMouseY=mouseMessage.y;
-            }else if(mouseMessage.message==WM_LBUTTONUP){
-                mouseDragging=false;
-            }else if(mouseMessage.message==WM_MOUSEMOVE&&mouseDragging&&mouseMessage.lbutton&&!p1Dead){
-                int dx=mouseMessage.x-lastMouseX,dy=mouseMessage.y-lastMouseY;
-                RECT pr=me.GetRect();
-                me.MoveCenterTo((pr.left+pr.right)/2+dx,(pr.top+pr.bottom)/2+dy);
-                lastMouseX=mouseMessage.x;lastMouseY=mouseMessage.y;
-            }
-        }
+        while(peekmessage(&mouseMessage,EX_MOUSE)) {}
 
         bool wing1Active=!p1Dead && frameStart<droneUntil1;
         bool wing2Active=gameMode==2 && !p2Dead && frameStart<droneUntil2;
@@ -3115,7 +3263,7 @@ bool Play(bool resumeGame=false) {
         if (runMode==1&&!bossActive&&levelPlayedMs>=bossWaitMs) {
             for (auto e:es) delete e; es.clear();
             for (auto b:ebs) delete b; ebs.clear();
-            es.push_back(new ENEMY_TYPE3(currentLevel,gameMode));
+            es.push_back(new ENEMY_TYPE3(currentLevel,gameMode,gameDifficulty));
             bossActive=true;
             levelBannerUntil=frameStart+2000;
             bossSummonClock=frameStart;lastBossPhase=1;PlayGameSound(SOUND_BOSS);
@@ -3128,21 +3276,27 @@ bool Play(bool resumeGame=false) {
             lastBossPhase=activeBoss->GetPhase();phaseBannerUntil=frameStart+700;
         }
         // Level 2 Boss specializes in calling two converging formations.
-        if(activeBoss&&currentLevel==2&&frameStart-bossSummonClock>=6500&&!activeBoss->IsTransitioning()){
+        ULONGLONG stage2SummonInterval=6500;
+        if(gameDifficulty!=1&&activeBoss&&currentLevel==2&&frameStart-bossSummonClock>=stage2SummonInterval&&!activeBoss->IsTransitioning()){
             int leftCenter=WIDTH/3-enemy2_image.getwidth()/2,rightCenter=WIDTH*2/3-enemy2_image.getwidth()/2;
-            for(int slot=-1;slot<=1;slot++){es.push_back(new ENEMY_FORMATION(enemy2_image,enemy2_image_mask,e2boom,e2boom_mask,2,gameMode,slot,leftCenter));
-                es.push_back(new ENEMY_FORMATION(enemy2_image,enemy2_image_mask,e2boom,e2boom_mask,2,gameMode,slot,rightCenter));}
+            for(int slot=-1;slot<=1;slot++){
+                es.push_back(new ENEMY_FORMATION(enemy2_image,enemy2_image_mask,e2boom,e2boom_mask,2,gameMode,slot,leftCenter));
+                es.push_back(new ENEMY_FORMATION(enemy2_image,enemy2_image_mask,e2boom,e2boom_mask,2,gameMode,slot,rightCenter));
+            }
             bossSummonClock=frameStart;
         }
         // The final Boss keeps summoning attacking cat escorts. Limit their
         // count so the encounter remains readable while never becoming a
         // stationary one-on-one damage race.
-        ULONGLONG finalSummonInterval=activeBoss&&activeBoss->GetPhase()==3?3200:5200;
+        ULONGLONG finalSummonInterval=gameDifficulty==1
+            ?(activeBoss&&activeBoss->GetPhase()==3?12000:16000)
+            :(activeBoss&&activeBoss->GetPhase()==3?3200:5200);
         if(activeBoss&&currentLevel>=3&&frameStart-bossSummonClock>=finalSummonInterval&&!activeBoss->IsTransitioning()){
             int escortCount=0;for(auto e:es)if(!e->IsBoss()&&!e->is_died)escortCount++;
-            if(escortCount<6){
+            int escortLimit=gameDifficulty==1?1:6;
+            if(escortCount<escortLimit){
                 es.push_back(new ENEMY_TYPE2(3,gameMode));
-                if(activeBoss->GetPhase()>=2&&escortCount<5){
+                if(gameDifficulty!=1&&activeBoss->GetPhase()>=2&&escortCount<5){
                     if(activeBoss->GetPhase()==3)es.push_back(new ENEMY_TYPE5(enemy2_image,enemy2_image_mask,e2boom,e2boom_mask,3,gameMode));
                     else es.push_back(new ENEMY_TYPE4(enemy2_image,enemy2_image_mask,e2boom,e2boom_mask,3,gameMode));
                 }
@@ -3168,7 +3322,7 @@ bool Play(bool resumeGame=false) {
         // Keep long Boss fights stable without freezing enemy movement/timers.
         while (ebs.size()>MAX_ENEMY_BULLETS) { delete ebs.back(); ebs.pop_back(); }
 
-        if(!p1Dead && !(gameMode==1 && deathPhase>0))me.Control(gameMode==1);
+        if(!p1Dead && !(gameMode==1 && deathPhase>0))me.Control();
         if(gameMode==2&&!p2Dead && !(gameMode==1 && deathPhase>0))me2.Control2();
         bool linkedShield=false;
         if(gameMode==2&&!p1Dead&&!p2Dead){RECT a=me.GetRect(),b=me2.GetRect();float dx=(a.left+a.right-b.left-b.right)/2.0f,dy=(a.top+a.bottom-b.top-b.bottom)/2.0f;linkedShield=dx*dx+dy*dy<=170.0f*170.0f;}
@@ -3184,7 +3338,7 @@ bool Play(bool resumeGame=false) {
             // 阶段 1（保留背景滚动）或正常游戏：照旧画背景
             int shakeX=0,shakeY=0;if(frameStart<shakeUntil){shakeX=rand()%9-4;shakeY=rand()%9-4;}
             setorigin(0,0);
-            bk.Show(frameStart);
+            currentScroller(currentLevel).Show(frameStart);
             // Screen shake emphasizes hits without making the scrolling
             // background itself appear to freeze or jump.
             setorigin(shakeX,shakeY);
@@ -3207,11 +3361,11 @@ bool Play(bool resumeGame=false) {
         // Score (左上角仍然保留)
         if (gameMode==1) {
             TCHAR inf[64];
-            _stprintf_s(inf,64,_T("Score:%llu"),totalScore);
+            _stprintf_s(inf,64,_T("得分：%llu"),totalScore);
             settextcolor(RED); settextstyle(22,0,_T("\u9ed1\u4f53")); outtextxy(10,48,inf);
         } else {
             TCHAR inf[64];
-            _stprintf_s(inf,64,_T("Score:%llu"),totalScore);
+            _stprintf_s(inf,64,_T("得分：%llu"),totalScore);
             settextcolor(RED); settextstyle(22,0,_T("\u9ed1\u4f53")); outtextxy(10,48,inf);
         }
 
@@ -3255,10 +3409,10 @@ bool Play(bool resumeGame=false) {
         if(runMode==1&&!bossActive){
             ULONGLONG waitMs=60000ULL+(ULONGLONG)(min(currentLevel,3)-1)*15000ULL;
             int remain=(int)((waitMs-min(waitMs,levelPlayedMs)+999)/1000);
-            _stprintf_s(levelText,64,_T("LEVEL %d / 3   BOSS %ds"),currentLevel,remain);
+            _stprintf_s(levelText,64,_T("%s  第 %d / 3 关   首领还有 %d 秒"),gameDifficulty==1?_T("简单"):_T("困难"),currentLevel,remain);
         }
-        else if(runMode==1)_stprintf_s(levelText,64,_T("LEVEL %d / 3"),currentLevel);
-        else _stprintf_s(levelText,32,_T("ENDLESS  TIER %d"),currentLevel);
+        else if(runMode==1)_stprintf_s(levelText,64,_T("%s  第 %d / 3 关"),gameDifficulty==1?_T("简单"):_T("困难"),currentLevel);
+        else _stprintf_s(levelText,32,_T("无尽模式  难度 %d"),currentLevel);
         settextcolor(RGB(30,80,180)); settextstyle(22,0,_T("\u9ed1\u4f53"));
         outtextxy(WIDTH/2-textwidth(levelText)/2,12,levelText);
 
@@ -3266,7 +3420,7 @@ bool Play(bool resumeGame=false) {
         int droneSeconds1=frameStart<droneUntil1?(int)((droneUntil1-frameStart+999)/1000):0;
         int sideSeconds=frameStart<sideBulletUntil?(int)((sideBulletUntil-frameStart+999)/1000):0;
         TCHAR itemText[112];
-        _stprintf_s(itemText,112,_T("BOMB B/N:%d  FIRE:%ds  DRONE:%ds  SIDE:%ds"),
+        _stprintf_s(itemText,112,_T("炸弹 B/N：%d  火力：%d秒  僚机：%d秒  侧弹：%d秒"),
             bombCount,fireSeconds1,droneSeconds1,sideSeconds);
         settextcolor(RGB(30,110,190)); settextstyle(19,0,_T("\u9ed1\u4f53"));
         outtextxy(10,76,itemText);
@@ -3280,29 +3434,35 @@ bool Play(bool resumeGame=false) {
             int fill=bw*hp/bossForUi->GetMaxHP();
             setfillcolor(bossForUi->IsHitFlashing()?WHITE:RGB(220,45,45)); solidrectangle(bx,by,bx+fill,by+bh);
             setlinecolor(BLACK); rectangle(bx,by,bx+bw,by+bh);
-            TCHAR bossText[32]; _stprintf_s(bossText,32,_T("BOSS  %d / %d"),hp,bossForUi->GetMaxHP());
+            TCHAR bossText[32]; _stprintf_s(bossText,32,_T("首领  %d / %d"),hp,bossForUi->GetMaxHP());
             settextcolor(WHITE); settextstyle(18,0,_T("\u9ed1\u4f53"));
             OutTextShadow(WIDTH/2-textwidth(bossText)/2,by+23,bossText);
         }
 
+        int berserkCountdown=activeBoss?activeBoss->GetBerserkCountdown():0;
+        if(berserkCountdown>0&&(frameStart/110)%2==0){
+            settextcolor(RGB(255,35,25));settextstyle(43,0,_T("黑体"));
+            LPCTSTR warning=_T("即将进入狂暴模式");OutTextShadowCentered(195,warning);
+        }
+
         if (frameStart<levelBannerUntil) {
             TCHAR banner[48];
-            if (bossActive) _stprintf_s(banner,48,_T("LEVEL %d  BOSS"),currentLevel);
-            else _stprintf_s(banner,48,_T("LEVEL %d  START"),currentLevel);
+            if (bossActive) _stprintf_s(banner,48,_T("第 %d 关  首领来袭"),currentLevel);
+            else _stprintf_s(banner,48,_T("第 %d 关  开始"),currentLevel);
             settextcolor(RGB(200,45,45)); settextstyle(42,0,_T("\u9ed1\u4f53"));
             outtextxy(WIDTH/2-textwidth(banner)/2,HEIGHT/2-50,banner);
         }
 
-        if(activeBoss&&(activeBoss->IsTransitioning()||frameStart<phaseBannerUntil)){
-            TCHAR phaseText[64];
-            if(activeBoss->GetPhase()==3)_tcscpy_s(phaseText,64,_T("BOSS BERSERK"));
-            else _stprintf_s(phaseText,64,_T("BOSS PHASE %d"),activeBoss->GetPhase());
-            settextcolor(activeBoss->GetPhase()==3?RGB(255,45,25):RGB(255,115,55));
-            settextstyle(activeBoss->GetPhase()==3?40:34,0,_T("\u9ed1\u4f53"));
+        // Internal attack phases still provide gradual escalation, but only
+        // the meaningful berserk state is announced to the player.
+        if(berserkCountdown==0&&activeBoss&&activeBoss->GetPhase()==3&&
+            (activeBoss->IsTransitioning()||frameStart<phaseBannerUntil)){
+            LPCTSTR phaseText=_T("首领狂暴");
+            settextcolor(RGB(255,45,25));settextstyle(40,0,_T("\u9ed1\u4f53"));
             OutTextShadow(WIDTH/2-textwidth(phaseText)/2,190,phaseText);
         }
 
-        TCHAR grazeText[32];_stprintf_s(grazeText,32,_T("GRAZE %d"),grazeCount);
+        TCHAR grazeText[32];_stprintf_s(grazeText,32,_T("擦弹 %d"),grazeCount);
         settextcolor(RGB(205,220,245));settextstyle(18,0,_T("Consolas"));outtextxy(10,104,grazeText);
         auto drawComboMultiplier=[&](){
             if(comboCount<=0)return;
@@ -3310,11 +3470,11 @@ bool Play(bool resumeGame=false) {
             settextcolor(comboCount>=10?RGB(255,175,35):RGB(150,230,255));settextstyle(42,0,_T("Consolas"));
             OutTextShadow(WIDTH-textwidth(multiplier)-8,2,multiplier);
         };
-        if(gameMode==2){TCHAR team[128];_stprintf_s(team,128,_T("P1 K:%d C:%d   P2 K:%d C:%d"),p1Kills,p1Contribution,p2Kills,p2Contribution);
+        if(gameMode==2){TCHAR team[128];_stprintf_s(team,128,_T("玩家一 击杀:%d 贡献:%d   玩家二 击杀:%d 贡献:%d"),p1Kills,p1Contribution,p2Kills,p2Contribution);
             settextcolor(RGB(210,225,255));outtextxy(WIDTH/2-textwidth(team)/2,950,team);}
         if(gameMode==2&&(p1Dead!=p2Dead)){
             ULONGLONG diedAt=p1Dead?p1DeathAt:p2DeathAt;int remain=max(0,(int)((REVIVE_HOLD_MS-(min(REVIVE_HOLD_MS,frameStart-diedAt))+999)/1000));
-            TCHAR reviveText[64];_stprintf_s(reviveText,64,_T("\u575a\u6301 %d \u79d2\u590d\u6d3b %s"),remain,p1Dead?_T("P1"):_T("P2"));
+            TCHAR reviveText[64];_stprintf_s(reviveText,64,_T("坚持 %d 秒复活%s"),remain,p1Dead?_T("玩家一"):_T("玩家二"));
             settextcolor(RGB(80,245,160));settextstyle(25,0,_T("\u9ed1\u4f53"));outtextxy(WIDTH/2-textwidth(reviveText)/2,880,reviveText);
         }
 
@@ -3375,7 +3535,7 @@ bool Play(bool resumeGame=false) {
                     else{bullet->active=false;delete bullet;shots.erase(bit);}
                     enemy->TakeDamage(damage);RECT hitRect=enemy->GetRect();SpawnParticles(effectParticles,(hitRect.left+hitRect.right)/2,(hitRect.top+hitRect.bottom)/2,
                         enemy->is_died?RGB(255,125,35):RGB(255,245,120),enemy->is_died?22:8,enemy->is_died?600:300);
-                    if(enemy->is_died){awardKill(enemy,owner);if(!enemy->IsBoss())TryDropPowerup(powerups,enemy->GetRect(),powerArt,currentLevel,gameMode,runMode);}
+                    if(enemy->is_died){awardKill(enemy,owner);if(!enemy->IsBoss())TryDropPowerup(powerups,enemy->GetRect(),powerArt,currentLevel,gameMode,runMode,gameDifficulty);}
                     return;
                 }
             }
@@ -3471,13 +3631,20 @@ bool Play(bool resumeGame=false) {
         }else{
             int stage=min(currentLevel,3);
             int difficultyTier=min(5,(int)(levelPlayedMs/15000));
-            maxEnemies=(size_t)min(16,4+stage*2+difficultyTier);
+            size_t originalMax=(size_t)min(16,4+stage*2+difficultyTier);
             int baseInterval=1000-stage*120;
-            spawnInterval=(ULONGLONG)max(240,baseInterval-difficultyTier*95);
+            ULONGLONG originalInterval=(ULONGLONG)max(240,baseInterval-difficultyTier*95);
+            if(gameDifficulty==1){
+                maxEnemies=max<size_t>(2,(originalMax+1)/2);
+                spawnInterval=originalInterval*2;
+            }else{
+                maxEnemies=originalMax;
+                spawnInterval=originalInterval;
+            }
         }
         if (!bossActive&&!levelCleared&&is_play&&es.size()<maxEnemies&&frameStart-lastSpawn>=spawnInterval && deathPhase==0) {
             SpawnEnemy(es, enemy_image,enemy_image_mask, e1boom,e1boom_mask,
-                enemy2_image,enemy2_image_mask, e2boom,e2boom_mask,min(currentLevel,3),gameMode);
+                enemy2_image,enemy2_image_mask, e2boom,e2boom_mask,min(currentLevel,3),gameMode,gameDifficulty);
             lastSpawn = frameStart;
         }
 
@@ -3599,7 +3766,7 @@ bool Play(bool resumeGame=false) {
             if(currentLevel>=3){
                 gameWon=true;recordResult=true;is_play=false;
             }else{
-                int selectedUpgrade=UpgradeSelect(bk_image,upgrade,currentLevel);
+                int selectedUpgrade=UpgradeSelect(currentBackground(currentLevel),upgrade,currentLevel);
                 if(selectedUpgrade==3)sideBulletUntil=GetTickCount()+SIDE_BULLET_DURATION_MS;
                 lastPlayerFrameAt=GetTickCount();gPlayerMoveScale=1.0f;
                 me.SetUpgradeBonuses(upgrade.moveSpeed,upgrade.shieldCapacity);me2.SetUpgradeBonuses(upgrade.moveSpeed,upgrade.shieldCapacity);
@@ -3646,6 +3813,7 @@ bool Play(bool resumeGame=false) {
     for (auto b : p1bs) delete b; p1bs.clear();
     for (auto b : p2bs) delete b; p2bs.clear();
     for (auto p : powerups) delete p; powerups.clear();
+    if(restartRequested){remove(SAVE_FILE);return false;}
     if(recordResult){AddScore(playerName,totalScore,runMode);remove(SAVE_FILE);if(gameWon)ShowVictory();else Over();}
     return true;
 }
@@ -3694,23 +3862,42 @@ int main() {
         if(action==4){ShowInstructions();continue;}
         if(action==3){ShowRanking();continue;}
         if(action==2){if(EnterNickname()){hasPlayer=true;SaveLastPlayer(playerName);}continue;}
-        if(action==1){SAVE_DATA check;if(LoadSave(check)){playerName=check.name;hasPlayer=true;SaveLastPlayer(playerName);Play(true);}continue;}
+        if(action==1){
+            SAVE_DATA check;
+            if(LoadSave(check)){
+                playerName=check.name;hasPlayer=true;SaveLastPlayer(playerName);
+                bool resumeAttempt=true;
+                while(true){
+                    bool finished=Play(resumeAttempt);
+                    if(finished)break;
+                    resumeAttempt=false;
+                    GameStart(gameMode);
+                }
+            }
+            continue;
+        }
         if(!hasPlayer){if(!EnterNickname())continue;hasPlayer=true;SaveLastPlayer(playerName);}
-        // Keep the two setup pages in one navigation stack.  Back from the
-        // single/dual-player page returns to game type; back from game type
-        // returns to the title menu.
+        // Keep game type, player count and stage difficulty in one navigation
+        // stack.  Difficulty is only relevant to the three-stage campaign.
         bool setupFinished=false;
         while(!setupFinished){
             runMode=SelectRunMode();
             if(runMode==0)break;
-            gameMode=screen2();
-            if(gameMode==0)continue;
-            Play(false);
-            setupFinished=true;
+            bool returnToRunMode=false;
+            while(!returnToRunMode&&!setupFinished){
+                gameMode=screen2();
+                if(gameMode==0){returnToRunMode=true;break;}
+                if(runMode==1){
+                    gameDifficulty=SelectDifficulty();
+                    if(gameDifficulty==0)continue;
+                }else gameDifficulty=2;
+                do{
+                    GameStart(gameMode);
+                }while(!Play(false));
+                setupFinished=true;
+            }
         }
     }
     CloseGameAudio();closegraph();timeEndPeriod(1);
     return 0;
 }
-
-

@@ -1,1 +1,20 @@
 .vs/
+
+# Visual Studio user-local settings
+*.user
+
+# Re-creatable compiler and linker output
+x64/
+Debug/
+Release/
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.ipdb
+*.iobj
+*.log
+*.tlog
+*.recipe
+*.lastbuildstate
+*.vcxproj.FileListAbsolute.txt

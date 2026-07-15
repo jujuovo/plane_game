@@ -8,7 +8,7 @@
       "args": [
         "/d",
         "/c",
-        "call D:\\VISUAL~2\\18\\Community\\Common7\\Tools\\VsDevCmd.bat -arch=x64 -host_arch=x64 && cl.exe /nologo /EHsc /std:c++20 /utf-8 /Z7 /D_UNICODE /DUNICODE /ID:\\VISUAL~2\\18\\Community\\VC\\Auxiliary\\VS\\include 飞机大战\\FileName.cpp /Fe:x64\\Debug\\飞机大战.exe /link /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup /LIBPATH:D:\\VISUAL~2\\18\\Community\\VC\\Auxiliary\\VS\\lib\\x64 user32.lib gdi32.lib shell32.lib ole32.lib"
+        "(if not exist x64\\Debug mkdir x64\\Debug) & call D:\\VISUAL~2\\18\\Community\\Common7\\Tools\\VsDevCmd.bat -arch=x64 -host_arch=x64 && cl.exe /nologo /EHsc /std:c++20 /utf-8 /Z7 /D_UNICODE /DUNICODE /ID:\\VISUAL~2\\18\\Community\\VC\\Auxiliary\\VS\\include /Fo:x64\\Debug\\FileName.obj 飞机大战\\FileName.cpp /Fe:x64\\Debug\\飞机大战.exe /link /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup /LIBPATH:D:\\VISUAL~2\\18\\Community\\VC\\Auxiliary\\VS\\lib\\x64 user32.lib gdi32.lib shell32.lib ole32.lib"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
