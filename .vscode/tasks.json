@@ -1,0 +1,40 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "编译飞机大战",
+      "type": "process",
+      "command": "C:\\Windows\\System32\\cmd.exe",
+      "args": [
+        "/d",
+        "/c",
+        "call D:\\VISUAL~2\\18\\Community\\Common7\\Tools\\VsDevCmd.bat -arch=x64 -host_arch=x64 && cl.exe /nologo /EHsc /std:c++20 /utf-8 /Z7 /D_UNICODE /DUNICODE /ID:\\VISUAL~2\\18\\Community\\VC\\Auxiliary\\VS\\include 飞机大战\\FileName.cpp /Fe:x64\\Debug\\飞机大战.exe /link /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup /LIBPATH:D:\\VISUAL~2\\18\\Community\\VC\\Auxiliary\\VS\\lib\\x64 user32.lib gdi32.lib shell32.lib ole32.lib"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$msCompile",
+      "group": "build"
+    },
+    {
+      "label": "直接运行飞机大战",
+      "type": "process",
+      "command": "${workspaceFolder}\\x64\\Debug\\飞机大战.exe",
+      "options": {
+        "cwd": "${workspaceFolder}\\飞机大战",
+        "env": {
+          "__COMPAT_LAYER": "HIGHDPIAWARE"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "never",
+        "panel": "dedicated"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    }
+  ]
+}

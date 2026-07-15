@@ -1,0 +1,9 @@
+﻿  FileName.cpp
+D:\wolf\learning\小学期程序设计小组作业\6\plane_game-main\飞机大战\FileName.cpp(1,1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
+D:\wolf\learning\小学期程序设计小组作业\6\plane_game-main\飞机大战\FileName.cpp(614,1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
+D:\wolf\learning\小学期程序设计小组作业\6\plane_game-main\飞机大战\FileName.cpp(1235,1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
+D:\wolf\learning\小学期程序设计小组作业\6\plane_game-main\飞机大战\FileName.cpp(1774,1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
+D:\wolf\learning\小学期程序设计小组作业\6\plane_game-main\飞机大战\FileName.cpp(2359,1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
+D:\wolf\learning\小学期程序设计小组作业\6\plane_game-main\飞机大战\FileName.cpp(2845,1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
+  飞机大战.vcxproj -> D:\wolf\learning\小学期程序设计小组作业\6\plane_game-main\x64\Debug\飞机大战.exe
+  D:\wolf\learning\小学期程序设计小组作业\6\plane_game-main\x64\Debug\飞机大战.exe: message: 正在部署依赖项

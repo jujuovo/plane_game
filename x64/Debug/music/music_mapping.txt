@@ -1,0 +1,7 @@
+﻿开始页面，结束页面，暂停页面音乐.ogg -> menu_loop.mp3
+无尽模式音乐.ogg -> endless_loop.mp3
+第一关音乐，第二关音乐（第一关，第二个boss出来前）.ogg -> stage12_loop.mp3
+第一关，第二关Boss音乐.ogg -> boss12_loop.mp3
+第三关音乐.ogg -> stage3_loop.mp3
+玩家飞机发射音乐.ogg -> shoot_sfx.wav
+飞机爆炸音乐.ogg -> explosion_sfx.wav
